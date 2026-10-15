@@ -205,7 +205,6 @@ describe('persistence', () => {
 
       const stored = await keys.findOneByOrFail({ key: 'order-1001' });
       expect(stored).toMatchObject({
-        status: 'processing',
         responseStatus: 202,
         responseBody: { success: true, data: { id: payment.id } },
         paymentId: null,

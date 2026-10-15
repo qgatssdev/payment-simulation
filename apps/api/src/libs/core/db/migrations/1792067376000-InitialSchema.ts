@@ -14,7 +14,6 @@ export class InitialSchema1792067376000 implements MigrationInterface {
         ('PENDING', 'PROCESSING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'REFUNDED');
       CREATE TYPE "payment_event_type" AS ENUM
         ('payment.created', 'payment.status_changed', 'payment.attempt_failed');
-      CREATE TYPE "idempotency_status" AS ENUM ('processing', 'completed');
       CREATE TYPE "job_type" AS ENUM ('process_payment');
       CREATE TYPE "job_status" AS ENUM ('queued', 'running', 'completed', 'failed');
 
@@ -63,7 +62,6 @@ export class InitialSchema1792067376000 implements MigrationInterface {
       CREATE TABLE "idempotency_keys" (
         "key"             varchar(255)       NOT NULL,
         "request_hash"    character(64)      NOT NULL,
-        "status"          idempotency_status NOT NULL DEFAULT 'processing',
         "response_status" smallint,
         "response_body"   jsonb,
         "payment_id"      uuid,
@@ -107,7 +105,6 @@ export class InitialSchema1792067376000 implements MigrationInterface {
       DROP TABLE "payments";
       DROP TYPE "job_status";
       DROP TYPE "job_type";
-      DROP TYPE "idempotency_status";
       DROP TYPE "payment_event_type";
       DROP TYPE "payment_status";
     `);
