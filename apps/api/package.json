@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:cov": "jest --coverage",
-    "test:int": "jest -c jest.int.config.js"
+    "test:int": "jest -c jest.int.config.js --runInBand",
+    "test:all": "jest -c jest.all.config.js --coverage"
   },
   "dependencies": {
     "@payment-sim/shared": "workspace:*",

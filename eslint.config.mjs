@@ -37,6 +37,12 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
   },
   {
+    // Tool configs (jest.*.js) are CommonJS; require() is how they share settings.
+    files: ['**/*.{js,cjs}'],
+    languageOptions: { sourceType: 'commonjs' },
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
+  },
+  {
     // Tests assert on untyped HTTP bodies (supertest's res.body is `any`).
     files: ['**/*.spec.ts', '**/*.int-spec.ts', '**/test/**/*.ts'],
     rules: {

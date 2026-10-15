@@ -4,7 +4,7 @@
   "description": "Payment processing simulation: Express + Postgres microservice with a Next.js dashboard",
   "packageManager": "pnpm@9.2.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "postinstall": "pnpm build:shared",
