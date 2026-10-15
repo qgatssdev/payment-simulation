@@ -1,0 +1,6 @@
+pnpm-lock.yaml
+dist
+coverage
+.next
+.claude/skills/create-verification-skill
+.claude/skills/maintain-verification-skill

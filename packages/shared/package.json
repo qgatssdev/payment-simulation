@@ -1,0 +1,32 @@
+{
+  "name": "@payment-sim/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Domain contracts shared by the API and the web app: payment state machine, DTOs, error codes, response types",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:cov": "jest --coverage"
+  },
+  "peerDependencies": {
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1"
+  },
+  "devDependencies": {
+    "@types/jest": "30.0.0",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.15.1",
+    "jest": "30.5.2",
+    "ts-jest": "29.4.15"
+  },
+  "dependencies": {
+    "reflect-metadata": "0.2.2"
+  }
+}
