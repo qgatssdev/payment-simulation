@@ -68,8 +68,11 @@ export interface ApiPage<T> {
   pagination: CursorPagination;
 }
 
+export type RequestLocation = 'body' | 'query' | 'params' | 'headers';
+
 export interface ValidationIssue {
-  /** Dot path into the request, e.g. `card.expYear`. */
+  location: RequestLocation;
+  /** Dot path within that location, e.g. `card.expYear`. */
   field: string;
   messages: string[];
 }

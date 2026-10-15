@@ -7,9 +7,12 @@
     "node": ">=22"
   },
   "scripts": {
+    "postinstall": "pnpm build:shared",
+    "build:shared": "pnpm --filter @payment-sim/shared build",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
+    "dev": "pnpm -r --parallel dev",
+    "typecheck": "pnpm build:shared && pnpm -r typecheck",
+    "test": "pnpm build:shared && pnpm -r test",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
