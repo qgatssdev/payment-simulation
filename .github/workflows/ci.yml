@@ -53,6 +53,8 @@ jobs:
         run: pnpm --filter @payment-sim/shared test:cov
       - name: API unit + full-stack tests (90/80/90/90 coverage enforced)
         run: pnpm --filter @payment-sim/api test:cov
+      - name: Web unit + component tests
+        run: pnpm --filter @payment-sim/web test
 
       - name: Upload API coverage report
         if: always()

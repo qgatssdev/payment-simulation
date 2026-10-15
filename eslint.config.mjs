@@ -1,4 +1,5 @@
 import js from '@eslint/js';
+import reactHooks from 'eslint-plugin-react-hooks';
 import prettier from 'eslint-config-prettier';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
@@ -31,6 +32,12 @@ export default tseslint.config(
       ],
       '@typescript-eslint/consistent-type-imports': 'error',
     },
+  },
+  {
+    // React rules (including the React Compiler-derived ones) for the web app.
+    files: ['apps/web/**/*.{ts,tsx}'],
+    ...reactHooks.configs.flat.recommended,
+    languageOptions: { globals: { ...globals.browser } },
   },
   {
     files: ['**/*.{js,mjs,cjs}'],
