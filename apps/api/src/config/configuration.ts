@@ -1,8 +1,10 @@
 import 'reflect-metadata';
 import { plainToInstance, Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUrl,
@@ -33,6 +35,9 @@ const csv = ({ value }: { value: unknown }): unknown =>
 
 const emptyToUndefined = ({ value }: { value: unknown }): unknown =>
   value === '' ? undefined : value;
+
+const bool = ({ value }: { value: unknown }): unknown =>
+  value === 'true' ? true : value === 'false' ? false : value;
 
 /**
  * Environment contract, validated once at boot. Adapted from the nest-template's
@@ -108,6 +113,80 @@ export class Configuration {
   @IsInt()
   @Min(0)
   SHUTDOWN_TIMEOUT_MS = 10_000;
+
+  // --- Payment worker -------------------------------------------------------------------
+
+  /** Run the job worker in this process. Disable to run API-only instances. */
+  @Transform(bool)
+  @IsBoolean()
+  WORKER_ENABLED = true;
+
+  /** Jobs processed in parallel per process. Keep below DATABASE_POOL_MAX. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  WORKER_CONCURRENCY = 4;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(10)
+  WORKER_POLL_INTERVAL_MS = 1_000;
+
+  /** A running job whose lock is older than this is presumed orphaned and re-queued. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1_000)
+  WORKER_LOCK_TIMEOUT_MS = 60_000;
+
+  /** Gateway attempts per payment, including the first. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(20)
+  JOB_MAX_ATTEMPTS = 4;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  RETRY_BASE_DELAY_MS = 1_000;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  RETRY_MAX_DELAY_MS = 30_000;
+
+  // --- Simulated gateway ----------------------------------------------------------------
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  GATEWAY_MIN_LATENCY_MS = 300;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  GATEWAY_MAX_LATENCY_MS = 2_500;
+
+  /** Per-attempt deadline; a slower gateway response counts as a retryable timeout. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  GATEWAY_TIMEOUT_MS = 3_000;
+
+  /** For cards that are not test cards: share of charges declined outright. */
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  GATEWAY_DECLINE_RATE = 0.1;
+
+  /** For cards that are not test cards: share of attempts failing with a retryable error. */
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  GATEWAY_TRANSIENT_ERROR_RATE = 0.15;
 
   /** Set by Render at build time; surfaced on /health so you can tell which build answered. */
   @IsOptional()

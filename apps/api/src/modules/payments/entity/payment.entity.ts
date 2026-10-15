@@ -12,6 +12,10 @@ import { bigintTransformer } from '../../../libs/core/db/transformers';
 
 /** What we keep of a card: enough to show and reason about it, never the PAN or CVC. */
 export class PaymentMethod {
+  /** The gateway's reference to the card, used by the worker to charge it. Never exposed. */
+  @Column({ type: 'varchar', length: 64 })
+  token!: string;
+
   @Column({ type: 'varchar', length: 20 })
   brand!: CardBrand;
 

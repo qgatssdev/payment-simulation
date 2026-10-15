@@ -1,15 +1,16 @@
 import type {
   ApiSuccess,
   CreatePaymentDto,
-  PaymentStatus,
+  PaymentFailureCode,
   PaymentView,
   TransitionActor,
   UpdatePaymentStatusDto,
 } from '@payment-sim/shared';
-import { PaymentEventType, detectCardBrand } from '@payment-sim/shared';
-import type { DataSource, EntityManager } from 'typeorm';
+import { ErrorCode, PaymentEventType, PaymentStatus } from '@payment-sim/shared';
+import type { DataSource } from 'typeorm';
+import type { PaymentGateway } from '../../../infra/gateway/payment-gateway';
 import { BaseResponse } from '../../../libs/core/base/base.response';
-import { NotFoundError } from '../../../libs/core/errors';
+import { ConflictError, NotFoundError } from '../../../libs/core/errors';
 import type { Logger } from '../../../libs/core/logger/logger';
 import { requestContext } from '../../../libs/core/logger/request-context';
 import type { JobRepository } from '../../processing/repository/job.repository';
@@ -22,7 +23,10 @@ import {
   StalePaymentVersionError,
 } from '../payment.errors';
 import type { IdempotencyKeyRepository } from '../repository/idempotency-key.repository';
-import type { PaymentEventRepository } from '../repository/payment-event.repository';
+import type {
+  NewPaymentEvent,
+  PaymentEventRepository,
+} from '../repository/payment-event.repository';
 import type { PaymentRepository } from '../repository/payment.repository';
 import { fingerprintCreatePayment } from './request-fingerprint';
 
@@ -32,11 +36,16 @@ export interface PaymentServiceDeps {
   events: PaymentEventRepository;
   jobs: JobRepository;
   idempotencyKeys: IdempotencyKeyRepository;
+  gateway: Pick<PaymentGateway, 'tokenize'>;
   logger: Logger;
   clock?: () => Date;
   idempotencyTtlMs?: number;
   /** Optimistic-lock retries before giving up with 409 CONCURRENT_MODIFICATION. */
   maxTransitionAttempts?: number;
+  /** Gateway attempts allowed per payment, recorded on its job. */
+  jobMaxAttempts?: number;
+  /** Called after a payment's job is committed, so a local worker can pick it up at once. */
+  onJobEnqueued?: () => void;
 }
 
 export interface CreatePaymentOutcome {
@@ -54,6 +63,16 @@ export interface TransitionOptions {
   /** Extra changes to apply with the transition (failure details, attempt count). */
   mutate?: (payment: Payment) => void;
 }
+
+export interface FailedAttempt {
+  attempt: number;
+  code: PaymentFailureCode;
+  message: string;
+  retryAt: Date;
+}
+
+/** Applies a change to a freshly read payment and describes the audit event for it. */
+type Change = (payment: Payment) => Omit<NewPaymentEvent, 'paymentId'>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -80,7 +99,7 @@ export class PaymentService {
     const requestHash = fingerprintCreatePayment(dto);
     const now = this.clock();
 
-    return this.deps.dataSource.transaction(async (manager) => {
+    const outcome = await this.deps.dataSource.transaction(async (manager) => {
       const keys = this.deps.idempotencyKeys.withTransaction(manager);
       const claim = await keys.claim(
         idempotencyKey,
@@ -104,6 +123,7 @@ export class PaymentService {
         };
       }
 
+      const card = this.deps.gateway.tokenize(dto.card);
       const payments = this.deps.payments.withTransaction(manager);
       const payment = await payments.save(
         payments.create({
@@ -112,8 +132,9 @@ export class PaymentService {
           customerEmail: dto.customerEmail,
           description: dto.description ?? null,
           paymentMethod: {
-            brand: detectCardBrand(dto.card.number),
-            last4: dto.card.number.slice(-4),
+            token: card.token,
+            brand: card.brand,
+            last4: card.last4,
             expMonth: dto.card.expMonth,
             expYear: dto.card.expYear,
           },
@@ -125,7 +146,9 @@ export class PaymentService {
         toStatus: payment.status,
         metadata: { amount: payment.amount, currency: payment.currency, ...this.trace() },
       });
-      await this.deps.jobs.withTransaction(manager).enqueuePaymentProcessing(payment.id);
+      await this.deps.jobs
+        .withTransaction(manager)
+        .enqueuePaymentProcessing(payment.id, this.deps.jobMaxAttempts);
 
       const body = BaseResponse.success(
         toPaymentView(payment),
@@ -139,6 +162,9 @@ export class PaymentService {
       );
       return { statusCode: 202, body, replayed: false };
     });
+
+    if (!outcome.replayed) this.deps.onJobEnqueued?.();
+    return outcome;
   }
 
   async get(id: string): Promise<Payment> {
@@ -160,51 +186,100 @@ export class PaymentService {
   }
 
   /**
-   * The one way a payment's status changes, for clients and the worker alike.
-   *
-   * Read → validate against the state machine → write only if the version is unchanged, with
-   * the audit event in the same transaction. No row lock is held while deciding. If another
-   * writer wins the race, re-read and re-validate: a cancel that loses to the worker moving
-   * the payment to PROCESSING is then correctly rejected as an invalid transition, rather
-   * than overwriting it. With If-Match the caller asked for "this exact version", so a moved
-   * payment is a 412 instead of a retry.
+   * The one way a payment's status changes, for clients and the worker alike. Validated
+   * against the shared state machine on a fresh read, persisted optimistically (see update).
    */
-  async transition(
+  transition(
     id: string,
     to: PaymentStatus,
     actor: TransitionActor,
     options: TransitionOptions = {},
   ): Promise<Payment> {
-    for (let attempt = 1; ; attempt++) {
-      const payment = await this.get(id);
-      const readVersion = payment.version;
-
-      if (
-        options.expectedVersion !== undefined &&
-        options.expectedVersion !== readVersion
-      ) {
-        throw new StalePaymentVersionError(options.expectedVersion, readVersion);
-      }
-
+    return this.update(id, options.expectedVersion, (payment) => {
       const change = payment.transitionTo(to, actor, this.clock());
       if (change.isFailure) throw new InvalidStateTransitionError(change.errorValue());
       options.mutate?.(payment);
+      return {
+        type: PaymentEventType.STATUS_CHANGED,
+        fromStatus: change.getValue().from,
+        toStatus: to,
+        reason: options.reason ?? null,
+        metadata: { actor, ...options.metadata },
+      };
+    });
+  }
 
-      const { from } = change.getValue();
-      const saved = await this.deps.dataSource.transaction((manager) =>
-        this.persistTransition(manager, payment, from, readVersion, actor, options),
-      );
+  /** A gateway attempt failed in a retryable way: count it and log it, status unchanged. */
+  recordFailedAttempt(id: string, failure: FailedAttempt): Promise<Payment> {
+    return this.update(id, undefined, (payment) => {
+      if (payment.status !== PaymentStatus.PROCESSING) {
+        throw new ConflictError(
+          `Cannot record an attempt on a ${payment.status} payment`,
+          ErrorCode.INVALID_STATE_TRANSITION,
+        );
+      }
+      payment.attempts = failure.attempt;
+      return {
+        type: PaymentEventType.ATTEMPT_FAILED,
+        reason: failure.message,
+        metadata: {
+          attempt: failure.attempt,
+          code: failure.code,
+          retryAt: failure.retryAt.toISOString(),
+        },
+      };
+    });
+  }
+
+  /**
+   * Read → apply the change → write only if the version is unchanged, with its audit event
+   * in the same transaction. No row lock is held while deciding. If another writer wins the
+   * race, re-read and re-apply: a cancel that loses to the worker moving the payment to
+   * PROCESSING is then rejected as an invalid transition instead of overwriting it. With
+   * If-Match the caller asked for "this exact version", so a moved payment is a 412.
+   */
+  private async update(
+    id: string,
+    expectedVersion: number | undefined,
+    change: Change,
+  ): Promise<Payment> {
+    for (let attempt = 1; ; attempt++) {
+      const payment = await this.get(id);
+      const readVersion = payment.version;
+      if (expectedVersion !== undefined && expectedVersion !== readVersion) {
+        throw new StalePaymentVersionError(expectedVersion, readVersion);
+      }
+
+      const event = change(payment);
+      const saved = await this.deps.dataSource.transaction(async (manager) => {
+        const updated = await this.deps.payments
+          .withTransaction(manager)
+          .updateIfVersion(payment, readVersion);
+        if (!updated) return null;
+        await this.deps.events.withTransaction(manager).append({
+          ...event,
+          paymentId: id,
+          metadata: { ...this.trace(), ...event.metadata },
+        });
+        return updated;
+      });
+
       if (saved) {
         this.deps.logger.info(
-          { paymentId: id, from, to, actor, version: saved.version },
-          'payment status changed',
+          {
+            paymentId: id,
+            event: event.type,
+            from: event.fromStatus,
+            to: event.toStatus,
+            version: saved.version,
+          },
+          'payment updated',
         );
         return saved;
       }
 
-      if (options.expectedVersion !== undefined) {
-        const current = await this.get(id);
-        throw new StalePaymentVersionError(options.expectedVersion, current.version);
+      if (expectedVersion !== undefined) {
+        throw new StalePaymentVersionError(expectedVersion, (await this.get(id)).version);
       }
       if (attempt >= this.maxTransitionAttempts)
         throw new ConcurrentModificationError(id);
@@ -215,32 +290,8 @@ export class PaymentService {
     }
   }
 
-  private async persistTransition(
-    manager: EntityManager,
-    payment: Payment,
-    fromStatus: PaymentStatus,
-    readVersion: number,
-    actor: TransitionActor,
-    options: TransitionOptions,
-  ): Promise<Payment | null> {
-    const saved = await this.deps.payments
-      .withTransaction(manager)
-      .updateIfVersion(payment, readVersion);
-    if (!saved) return null;
-
-    await this.deps.events.withTransaction(manager).append({
-      paymentId: payment.id,
-      type: PaymentEventType.STATUS_CHANGED,
-      fromStatus,
-      toStatus: saved.status,
-      reason: options.reason ?? null,
-      metadata: { actor, ...this.trace(), ...options.metadata },
-    });
-    return saved;
-  }
-
-  private trace(): Record<string, string> {
-    const requestId = requestContext.requestId();
-    return requestId ? { requestId } : {};
+  /** Correlation ids of the current request or job, recorded on every audit event. */
+  private trace(): Record<string, string | number> {
+    return { ...requestContext.get() };
   }
 }

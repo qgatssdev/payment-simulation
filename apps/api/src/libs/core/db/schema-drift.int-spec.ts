@@ -1,5 +1,6 @@
 import type { DataSource } from 'typeorm';
 import { createTestDataSource } from '../../../test/database';
+import { MIGRATIONS } from './data-source';
 import { migrate, revertLastMigration } from './migrator';
 
 /**
@@ -33,14 +34,14 @@ describe('schema drift', () => {
   });
 
   it('migrations revert cleanly and re-apply to the same schema', async () => {
-    await revertLastMigration(dataSource);
+    for (let i = 0; i < MIGRATIONS.length; i++) await revertLastMigration(dataSource);
     const tables = await dataSource.query<{ table_name: string }[]>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name <> 'typeorm_migrations'`,
     );
     expect(tables).toEqual([]);
 
-    expect(await migrate(dataSource)).toEqual(['InitialSchema1792067376000']);
+    expect(await migrate(dataSource)).toEqual(MIGRATIONS.map((m) => m.name));
     expect(await pendingSchemaChanges(dataSource)).toEqual([]);
   });
 });

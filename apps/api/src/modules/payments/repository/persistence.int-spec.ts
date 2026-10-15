@@ -32,6 +32,7 @@ describe('persistence', () => {
       currency: 'NGN',
       customerEmail: 'ada@example.com',
       paymentMethod: {
+        token: 'tok_sim_succeed_0123456789abcdef',
         brand: CardBrand.VISA,
         last4: '4242',
         expMonth: 12,
@@ -54,7 +55,13 @@ describe('persistence', () => {
         version: 1,
         description: null,
         processedAt: null,
-        paymentMethod: { brand: 'visa', last4: '4242', expMonth: 12, expYear: 2030 },
+        paymentMethod: {
+          token: 'tok_sim_succeed_0123456789abcdef',
+          brand: 'visa',
+          last4: '4242',
+          expMonth: 12,
+          expYear: 2030,
+        },
       });
       expect(typeof loaded?.amount).toBe('number');
       expect(loaded?.createdAt).toBeInstanceOf(Date);
@@ -75,7 +82,13 @@ describe('persistence', () => {
         Object.keys(row ?? {})
           .filter((k) => k.startsWith('card_'))
           .sort(),
-      ).toEqual(['card_brand', 'card_exp_month', 'card_exp_year', 'card_last4']);
+      ).toEqual([
+        'card_brand',
+        'card_exp_month',
+        'card_exp_year',
+        'card_last4',
+        'card_token',
+      ]);
     });
 
     it('bumps version and updatedAt on every save', async () => {

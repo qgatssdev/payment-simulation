@@ -6,12 +6,13 @@ import { Payment } from '../../../modules/payments/entity/payment.entity';
 import { Job } from '../../../modules/processing/entity/job.entity';
 import type { Logger } from '../logger/logger';
 import { InitialSchema1792067376000 } from './migrations/1792067376000-InitialSchema';
+import { AddCardToken1792074000000 } from './migrations/1792074000000-AddCardToken';
 import { SnakeNamingStrategy } from './snake-naming.strategy';
 import { TypeOrmPinoLogger } from './typeorm-logger';
 
 /** Listed explicitly, not globbed, so the same list works from src (tsx, ts-jest) and dist. */
 export const ENTITIES = [Payment, PaymentEvent, IdempotencyKey, Job];
-export const MIGRATIONS = [InitialSchema1792067376000];
+export const MIGRATIONS = [InitialSchema1792067376000, AddCardToken1792074000000];
 
 export interface DataSourceOptions {
   url: string;

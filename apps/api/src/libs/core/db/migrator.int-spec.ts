@@ -28,7 +28,7 @@ describe('migrator', () => {
   it('runs on a single pooled connection without deadlocking on its own lock', async () => {
     const ds = await open();
     await revertLastMigration(ds);
-    expect(await migrate(ds)).toEqual(['InitialSchema1792067376000']);
+    expect(await migrate(ds)).toEqual(['AddCardToken1792074000000']);
     expect(await migrate(ds)).toEqual([]);
   });
 
@@ -37,7 +37,7 @@ describe('migrator', () => {
     await revertLastMigration(a);
 
     const results = await Promise.all([migrate(a), migrate(b)]);
-    expect(results.flat()).toEqual(['InitialSchema1792067376000']);
+    expect(results.flat()).toEqual(['AddCardToken1792074000000']);
     expect(await a.showMigrations()).toBe(false);
   });
 });

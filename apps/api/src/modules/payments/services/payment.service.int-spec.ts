@@ -35,6 +35,7 @@ describe('PaymentService.transition under contention', () => {
         currency: 'USD',
         customerEmail: 'ada@example.com',
         paymentMethod: {
+          token: 'tok_sim_succeed_0123456789abcdef',
           brand: 'visa',
           last4: '4242',
           expMonth: 1,
