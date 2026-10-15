@@ -5,6 +5,8 @@ import type { Express, Router } from 'express';
 import express from 'express';
 import helmet from 'helmet';
 import type { Configuration } from './config';
+import { createDocsController } from './docs/docs.controller';
+import { API_VERSION, buildOpenApiDocument } from './docs/openapi';
 import {
   errorHandler,
   notFoundHandler,
@@ -66,6 +68,7 @@ export function createApp({
   app.use(bindRequestContext());
 
   app.use(createHealthController(healthService));
+  app.use(createDocsController(buildOpenApiDocument(API_VERSION)));
   app.use(
     '/api/v1',
     createRateLimiter({
