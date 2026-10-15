@@ -31,6 +31,8 @@ export interface PaymentView {
 
 export interface PaymentEventView {
   id: string;
+  /** Strictly increasing across all events; also the SSE event id clients resume from. */
+  sequence: number;
   paymentId: string;
   type: PaymentEventType;
   fromStatus: PaymentStatus | null;
@@ -43,8 +45,9 @@ export interface PaymentEventView {
 export interface StatsView {
   countsByStatus: Record<PaymentStatus, number>;
   total: number;
-  /** Succeeded ÷ (succeeded + failed), or null when nothing has settled yet. */
+  /** Approved ÷ (approved + failed) among processed payments; null until one settles. */
   successRate: number | null;
+  /** Captured volume in minor units: payments currently SUCCEEDED (refunds excluded). */
   volumeByCurrency: Partial<Record<Currency, number>>;
   processingTimeMs: { p50: number | null; p95: number | null };
 }

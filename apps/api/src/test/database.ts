@@ -1,6 +1,6 @@
 import type { DataSource } from 'typeorm';
 import { createApp } from '../app';
-import type { ContainerOverrides } from '../container';
+import type { Container, ContainerOverrides } from '../container';
 import { createContainer } from '../container';
 import { createDataSource } from '../libs/core/db/data-source';
 import { createLogger } from '../libs/core/logger/logger';
@@ -43,6 +43,8 @@ export async function createIntegrationApp(
   env: NodeJS.ProcessEnv = {},
 ) {
   const config = testConfig({
+    // The realtime listener opens its own connection, so it needs the real test database URL.
+    DATABASE_URL: testDatabaseUrl(),
     RATE_LIMIT_MAX: '10000',
     RATE_LIMIT_WRITE_MAX: '10000',
     ...env,
@@ -52,7 +54,15 @@ export async function createIntegrationApp(
     createLogger({ level: 'silent', pretty: false }),
     { ...overrides, dataSource },
   );
+  openContainers.push(container);
   return { app: createApp(container), container };
+}
+
+const openContainers: Container[] = [];
+
+/** Stop every container's worker and listener (the shared data source stays open). */
+export async function closeIntegrationApps(): Promise<void> {
+  await Promise.all(openContainers.splice(0).map((c) => c.shutdown()));
 }
 
 export async function truncateAll(dataSource: DataSource): Promise<void> {

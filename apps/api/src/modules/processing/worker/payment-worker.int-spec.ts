@@ -6,6 +6,7 @@ import type { DataSource } from 'typeorm';
 import type { Container } from '../../../container';
 import type { MockPaymentGateway } from '../../../infra/gateway/mock-payment-gateway';
 import {
+  closeIntegrationApps,
   createIntegrationApp,
   createTestDataSource,
   truncateAll,
@@ -55,7 +56,10 @@ describe('payment worker', () => {
 
   beforeEach(() => truncateAll(dataSource));
   afterEach(() => jest.restoreAllMocks());
-  afterAll(() => dataSource.destroy());
+  afterAll(async () => {
+    await closeIntegrationApps();
+    await dataSource.destroy();
+  });
 
   async function createPayment(
     cardNumber: string,

@@ -3,6 +3,7 @@ import type { Express } from 'express';
 import request from 'supertest';
 import type { DataSource } from 'typeorm';
 import {
+  closeIntegrationApps,
   createIntegrationApp,
   createTestDataSource,
   truncateAll,
@@ -46,7 +47,10 @@ describe('payments API', () => {
 
   beforeEach(() => truncateAll(dataSource));
 
-  afterAll(() => dataSource.destroy());
+  afterAll(async () => {
+    await closeIntegrationApps();
+    await dataSource.destroy();
+  });
 
   describe('POST /payments', () => {
     it('accepts a payment for async processing', async () => {

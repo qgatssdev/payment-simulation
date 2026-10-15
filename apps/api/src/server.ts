@@ -48,7 +48,10 @@ async function main(): Promise<void> {
 
   registerShutdown(
     server,
-    () => container.shutdown(),
+    {
+      endLongLivedResponses: () => container.closeStreams(),
+      releaseResources: () => container.shutdown(),
+    },
     logger,
     config.SHUTDOWN_TIMEOUT_MS,
   );
@@ -56,7 +59,7 @@ async function main(): Promise<void> {
 
 function registerShutdown(
   server: Server,
-  releaseResources: () => Promise<void>,
+  hooks: { endLongLivedResponses: () => void; releaseResources: () => Promise<void> },
   logger: Logger,
   timeoutMs: number,
 ): void {
@@ -74,12 +77,14 @@ function registerShutdown(
     force.unref();
 
     try {
-      // Stop accepting connections and let in-flight requests finish.
+      // Stop accepting connections and let in-flight requests finish. Open event streams
+      // never finish on their own, so end them, or close() would wait for the force timeout.
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
         server.closeIdleConnections();
+        hooks.endLongLivedResponses();
       });
-      await releaseResources();
+      await hooks.releaseResources();
       logger.info('shutdown complete');
       process.exit(0);
     } catch (err) {

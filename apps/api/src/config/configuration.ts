@@ -114,6 +114,27 @@ export class Configuration {
   @Min(0)
   SHUTDOWN_TIMEOUT_MS = 10_000;
 
+  // --- Live updates (Server-Sent Events) ----------------------------------------------------
+
+  /** Comment frame interval that keeps idle streams open through proxies. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(10)
+  SSE_HEARTBEAT_MS = 15_000;
+
+  /** Open streams per process; beyond this new streams get 503. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  SSE_MAX_CLIENTS = 500;
+
+  /** Most missed events replayed to a client resuming with Last-Event-ID. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(5_000)
+  SSE_REPLAY_LIMIT = 500;
+
   // --- Payment worker -------------------------------------------------------------------
 
   /** Run the job worker in this process. Disable to run API-only instances. */

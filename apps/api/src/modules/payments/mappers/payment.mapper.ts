@@ -1,4 +1,8 @@
-import type { PaymentEventView, PaymentView } from '@payment-sim/shared';
+import type {
+  PaymentEventView,
+  PaymentStreamMessage,
+  PaymentView,
+} from '@payment-sim/shared';
 import type { PaymentEvent } from '../entity/payment-event.entity';
 import type { Payment } from '../entity/payment.entity';
 
@@ -30,6 +34,7 @@ export function toPaymentView(payment: Payment): PaymentView {
 export function toPaymentEventView(event: PaymentEvent): PaymentEventView {
   return {
     id: event.id,
+    sequence: event.sequence,
     paymentId: event.paymentId,
     type: event.type,
     fromStatus: event.fromStatus,
@@ -37,5 +42,17 @@ export function toPaymentEventView(event: PaymentEvent): PaymentEventView {
     reason: event.reason,
     metadata: event.metadata,
     createdAt: event.createdAt.toISOString(),
+  };
+}
+
+/** What a stream subscriber receives: the event plus the payment's state after it. */
+export function toStreamMessage(
+  payment: Payment,
+  event: PaymentEvent,
+): PaymentStreamMessage {
+  return {
+    type: event.type,
+    payment: toPaymentView(payment),
+    event: toPaymentEventView(event),
   };
 }

@@ -1,5 +1,6 @@
 import type { PaymentEventType, PaymentStatus } from '@payment-sim/shared';
 import type { EntityManager } from 'typeorm';
+import { MoreThan } from 'typeorm';
 import { BaseRepository } from '../../../libs/core/base/base.repository';
 import { PaymentEvent } from '../entity/payment-event.entity';
 
@@ -31,5 +32,18 @@ export class PaymentEventRepository extends BaseRepository<PaymentEvent> {
 
   listForPayment(paymentId: string): Promise<PaymentEvent[]> {
     return this.repository.find({ where: { paymentId }, order: { sequence: 'ASC' } });
+  }
+
+  /** Events after a sequence number, oldest first: the replay for a resuming stream. */
+  listAfter(
+    afterSequence: number,
+    limit: number,
+    paymentId?: string,
+  ): Promise<PaymentEvent[]> {
+    return this.repository.find({
+      where: { sequence: MoreThan(afterSequence), ...(paymentId ? { paymentId } : {}) },
+      order: { sequence: 'ASC' },
+      take: limit,
+    });
   }
 }

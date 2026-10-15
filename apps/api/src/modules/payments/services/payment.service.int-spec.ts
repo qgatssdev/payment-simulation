@@ -2,6 +2,7 @@ import { ErrorCode, PaymentFailureCode, PaymentStatus } from '@payment-sim/share
 import type { DataSource } from 'typeorm';
 import { AppError } from '../../../libs/core/errors';
 import {
+  closeIntegrationApps,
   createIntegrationApp,
   createTestDataSource,
   truncateAll,
@@ -25,7 +26,10 @@ describe('PaymentService.transition under contention', () => {
 
   beforeEach(() => truncateAll(dataSource));
   afterEach(() => jest.restoreAllMocks());
-  afterAll(() => dataSource.destroy());
+  afterAll(async () => {
+    await closeIntegrationApps();
+    await dataSource.destroy();
+  });
 
   async function pendingPayment(): Promise<Payment> {
     const payments = dataSource.getRepository(Payment);

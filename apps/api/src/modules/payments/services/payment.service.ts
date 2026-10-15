@@ -1,21 +1,33 @@
 import type {
   ApiSuccess,
   CreatePaymentDto,
+  ListPaymentsQueryDto,
+  PaymentStreamMessage,
+  StatsView,
   PaymentFailureCode,
   PaymentView,
   TransitionActor,
   UpdatePaymentStatusDto,
 } from '@payment-sim/shared';
-import { ErrorCode, PaymentEventType, PaymentStatus } from '@payment-sim/shared';
+import {
+  DEFAULT_PAGE_LIMIT,
+  ErrorCode,
+  PAYMENT_STATUSES,
+  PaymentEventType,
+  PaymentStatus,
+} from '@payment-sim/shared';
 import type { DataSource } from 'typeorm';
 import type { PaymentGateway } from '../../../infra/gateway/payment-gateway';
+import { decodeCursor, encodeCursor } from '../../../libs/common/http/cursor';
 import { BaseResponse } from '../../../libs/core/base/base.response';
 import { ConflictError, NotFoundError } from '../../../libs/core/errors';
 import type { Logger } from '../../../libs/core/logger/logger';
 import { requestContext } from '../../../libs/core/logger/request-context';
 import type { JobRepository } from '../../processing/repository/job.repository';
+import type { PaymentEventPublisher } from '../../realtime/payment-event.publisher';
+import type { PaymentEvent } from '../entity/payment-event.entity';
 import type { Payment } from '../entity/payment.entity';
-import { toPaymentView } from '../mappers/payment.mapper';
+import { toPaymentView, toStreamMessage } from '../mappers/payment.mapper';
 import {
   ConcurrentModificationError,
   IdempotencyKeyReusedError,
@@ -37,6 +49,8 @@ export interface PaymentServiceDeps {
   jobs: JobRepository;
   idempotencyKeys: IdempotencyKeyRepository;
   gateway: Pick<PaymentGateway, 'tokenize'>;
+  /** Announces committed events and enqueued jobs to every instance. */
+  publisher: PaymentEventPublisher;
   logger: Logger;
   clock?: () => Date;
   idempotencyTtlMs?: number;
@@ -140,7 +154,7 @@ export class PaymentService {
           },
         }),
       );
-      await this.deps.events.withTransaction(manager).append({
+      const created = await this.deps.events.withTransaction(manager).append({
         paymentId: payment.id,
         type: PaymentEventType.CREATED,
         toStatus: payment.status,
@@ -149,6 +163,8 @@ export class PaymentService {
       await this.deps.jobs
         .withTransaction(manager)
         .enqueuePaymentProcessing(payment.id, this.deps.jobMaxAttempts);
+      await this.deps.publisher.paymentEvent(manager, toStreamMessage(payment, created));
+      await this.deps.publisher.jobEnqueued(manager);
 
       const body = BaseResponse.success(
         toPaymentView(payment),
@@ -171,6 +187,67 @@ export class PaymentService {
     const payment = await this.deps.payments.findById(id);
     if (!payment) throw NotFoundError.resource('Payment', id);
     return payment;
+  }
+
+  /** Newest first, keyset-paginated. The cursor is opaque to clients. */
+  async list(
+    query: ListPaymentsQueryDto,
+  ): Promise<{ items: Payment[]; nextCursor: string | null }> {
+    const page = await this.deps.payments.listPage({
+      limit: query.limit ?? DEFAULT_PAGE_LIMIT,
+      after: query.cursor ? decodeCursor(query.cursor) : undefined,
+      status: query.status,
+      currency: query.currency,
+      from: query.from,
+      to: query.to,
+    });
+    return { items: page.items, nextCursor: page.next ? encodeCursor(page.next) : null };
+  }
+
+  async listEvents(paymentId: string): Promise<PaymentEvent[]> {
+    await this.get(paymentId);
+    return this.deps.events.listForPayment(paymentId);
+  }
+
+  /**
+   * Events after `afterSequence` (optionally for one payment), each paired with the payment's
+   * current state: what a reconnecting stream client missed.
+   */
+  async streamBacklog(
+    afterSequence: number,
+    limit: number,
+    paymentId?: string,
+  ): Promise<PaymentStreamMessage[]> {
+    const events = await this.deps.events.listAfter(afterSequence, limit, paymentId);
+    const ids = [...new Set(events.map((e) => e.paymentId))];
+    const byId = new Map((await this.deps.payments.findByIds(ids)).map((p) => [p.id, p]));
+    return events.flatMap((event) => {
+      const payment = byId.get(event.paymentId);
+      return payment ? [toStreamMessage(payment, event)] : [];
+    });
+  }
+
+  async stats(): Promise<StatsView> {
+    const { countsByStatus, succeededVolume, processingTimeMs } =
+      await this.deps.payments.aggregates();
+    const counts = Object.fromEntries(PAYMENT_STATUSES.map((s) => [s, 0])) as Record<
+      PaymentStatus,
+      number
+    >;
+    for (const { status, count } of countsByStatus) counts[status] = count;
+
+    // A refunded payment was approved first, so it counts towards the success rate.
+    const approved = counts.SUCCEEDED + counts.REFUNDED;
+    const processed = approved + counts.FAILED;
+    return {
+      countsByStatus: counts,
+      total: Object.values(counts).reduce((a, b) => a + b, 0),
+      successRate: processed === 0 ? null : approved / processed,
+      volumeByCurrency: Object.fromEntries(
+        succeededVolume.map((v) => [v.currency, v.total]),
+      ),
+      processingTimeMs,
+    };
   }
 
   /** Client-initiated change (cancel, refund) via PATCH /payments/:id/status. */
@@ -256,11 +333,15 @@ export class PaymentService {
           .withTransaction(manager)
           .updateIfVersion(payment, readVersion);
         if (!updated) return null;
-        await this.deps.events.withTransaction(manager).append({
+        const appended = await this.deps.events.withTransaction(manager).append({
           ...event,
           paymentId: id,
           metadata: { ...this.trace(), ...event.metadata },
         });
+        await this.deps.publisher.paymentEvent(
+          manager,
+          toStreamMessage(updated, appended),
+        );
         return updated;
       });
 

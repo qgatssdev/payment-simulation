@@ -1,6 +1,8 @@
 import {
   CreatePaymentDto,
+  DEFAULT_PAGE_LIMIT,
   HEADERS,
+  ListPaymentsQueryDto,
   PaymentIdParamDto,
   UpdatePaymentStatusDto,
 } from '@payment-sim/shared';
@@ -12,12 +14,39 @@ import {
   versionETag,
 } from '../../../libs/common/http/headers';
 import { BaseResponse } from '../../../libs/core/base/base.response';
-import { toPaymentView } from '../mappers/payment.mapper';
+import { PaginatedResponse } from '../../../libs/core/base/paginated.response';
+import { toPaymentEventView, toPaymentView } from '../mappers/payment.mapper';
 import { IdempotencyKeyRequiredError } from '../payment.errors';
 import type { PaymentService } from '../services/payment.service';
 
 export function createPaymentController(payments: PaymentService): Router {
   const router = Router();
+
+  router.get(
+    '/payments',
+    endpoint({ query: ListPaymentsQueryDto }, async ({ query }, _req, res) => {
+      const page = await payments.list(query);
+      res.json(
+        PaginatedResponse.success(page.items.map(toPaymentView), {
+          limit: query.limit ?? DEFAULT_PAGE_LIMIT,
+          nextCursor: page.nextCursor,
+          hasMore: page.nextCursor !== null,
+        }),
+      );
+    }),
+  );
+
+  router.get(
+    '/payments/:id/events',
+    endpoint({ params: PaymentIdParamDto }, async ({ params }, _req, res) => {
+      const events = await payments.listEvents(params.id);
+      res.json(BaseResponse.success(events.map(toPaymentEventView)));
+    }),
+  );
+
+  router.get('/stats', async (_req, res) => {
+    res.json(BaseResponse.success(await payments.stats()));
+  });
 
   router.post(
     '/payments',

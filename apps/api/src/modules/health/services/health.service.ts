@@ -3,11 +3,17 @@ import type { Logger } from '../../../libs/core/logger/logger';
 /** A dependency the service cannot serve traffic without (e.g. the database). */
 export interface ReadinessCheck {
   readonly name: string;
+  /**
+   * Critical checks gate readiness. Non-critical ones are reported but do not take the
+   * instance out of rotation (realtime can degrade while REST keeps working).
+   */
+  readonly critical?: boolean;
   check(): Promise<void>;
 }
 
 export interface CheckResult {
   status: 'up' | 'down';
+  critical: boolean;
   latencyMs: number;
 }
 
@@ -48,7 +54,7 @@ export class HealthService {
       this.checks.map(async (c) => [c.name, await this.run(c)] as const),
     );
     return {
-      ready: entries.every(([, result]) => result.status === 'up'),
+      ready: entries.every(([, result]) => result.status === 'up' || !result.critical),
       checks: Object.fromEntries(entries),
     };
   }
@@ -66,10 +72,18 @@ export class HealthService {
           );
         }),
       ]);
-      return { status: 'up', latencyMs: elapsed(startedAt) };
+      return {
+        status: 'up',
+        critical: check.critical ?? true,
+        latencyMs: elapsed(startedAt),
+      };
     } catch (err) {
       this.logger.warn({ err, check: check.name }, 'readiness check failed');
-      return { status: 'down', latencyMs: elapsed(startedAt) };
+      return {
+        status: 'down',
+        critical: check.critical ?? true,
+        latencyMs: elapsed(startedAt),
+      };
     } finally {
       clearTimeout(timer);
     }
