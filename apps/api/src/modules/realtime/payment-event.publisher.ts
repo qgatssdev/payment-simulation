@@ -1,33 +1,27 @@
 import type { PaymentStreamMessage } from '@payment-sim/shared';
-import type { EntityManager } from 'typeorm';
-import { CHANNELS, MAX_NOTIFY_PAYLOAD_BYTES } from './channels';
+import type { StoreTx } from '../../infra/store/payment-store';
+import type { RealtimeHub } from './realtime-hub';
 
 export interface PaymentEventPublisher {
-  paymentEvent(manager: EntityManager, message: PaymentStreamMessage): Promise<void>;
-  jobEnqueued(manager: EntityManager): Promise<void>;
+  paymentEvent(tx: StoreTx, message: PaymentStreamMessage): void;
+  jobEnqueued(tx: StoreTx): void;
 }
 
 /**
- * Publishes through Postgres NOTIFY on the caller's transaction. Postgres delivers
- * notifications only when that transaction commits (and drops them on rollback), so a
- * subscriber can never see an event that did not happen — no outbox table needed.
+ * Publishes as an after-commit hook of the caller's transaction: subscribers hear about a
+ * change only once it is committed and durable, and never about one that rolled back.
  */
-export class PgNotifyPublisher implements PaymentEventPublisher {
-  async paymentEvent(
-    manager: EntityManager,
-    message: PaymentStreamMessage,
-  ): Promise<void> {
-    const payload = JSON.stringify(message);
-    if (Buffer.byteLength(payload) > MAX_NOTIFY_PAYLOAD_BYTES) {
-      // Every field is length-bounded, so this is a bug; fail the transaction loudly.
-      throw new Error(
-        `Stream message for ${message.payment.id} exceeds the NOTIFY limit`,
-      );
-    }
-    await manager.query('SELECT pg_notify($1, $2)', [CHANNELS.PAYMENT_EVENTS, payload]);
+export class AfterCommitPublisher implements PaymentEventPublisher {
+  constructor(
+    private readonly hub: RealtimeHub,
+    private readonly wakeWorker: () => void,
+  ) {}
+
+  paymentEvent(tx: StoreTx, message: PaymentStreamMessage): void {
+    tx.afterCommit(() => this.hub.publish(message));
   }
 
-  async jobEnqueued(manager: EntityManager): Promise<void> {
-    await manager.query('SELECT pg_notify($1, $2)', [CHANNELS.JOBS_ENQUEUED, '']);
+  jobEnqueued(tx: StoreTx): void {
+    tx.afterCommit(this.wakeWorker);
   }
 }

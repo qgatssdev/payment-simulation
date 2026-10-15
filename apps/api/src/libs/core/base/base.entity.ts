@@ -1,30 +1,15 @@
-import {
-  CreateDateColumn,
-  PrimaryGeneratedColumn,
-  UpdateDateColumn,
-  VersionColumn,
-} from 'typeorm';
-
 /**
- * From the nest-template's BaseEntity, split in two: append-only rows (audit events) need an
- * id and a creation time, but no updatedAt or version.
+ * From the nest-template's BaseEntity, split in two and decoupled from any ORM: append-only
+ * records (audit events) have an id and a creation time; mutable ones also carry updatedAt and
+ * a version that drives optimistic locking (see PaymentRepository.updateIfVersion).
  */
-export abstract class BaseEntity {
-  @PrimaryGeneratedColumn('uuid')
-  id!: string;
-
-  @CreateDateColumn({ type: 'timestamptz' })
-  createdAt!: Date;
+export interface BaseRecord {
+  id: string;
+  createdAt: Date;
 }
 
-/**
- * Mutable aggregates. `version` is bumped on every save and drives optimistic locking:
- * updates are conditional on the version the writer read (see PaymentRepository).
- */
-export abstract class VersionedEntity extends BaseEntity {
-  @UpdateDateColumn({ type: 'timestamptz' })
-  updatedAt!: Date;
-
-  @VersionColumn()
-  version!: number;
+export interface VersionedRecord extends BaseRecord {
+  updatedAt: Date;
+  /** 1 on insert, +1 on every update. */
+  version: number;
 }

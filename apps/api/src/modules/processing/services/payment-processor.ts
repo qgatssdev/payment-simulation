@@ -139,7 +139,7 @@ export class PaymentProcessor {
     if (err instanceof GatewayError) {
       return { code: err.code, message: err.message, retryable: err.retryable };
     }
-    // Not a gateway answer at all (a bug, the database): let the worker's crash handling decide.
+    // Not a gateway answer at all (a bug, storage): let the worker's crash handling decide.
     throw err;
   }
 

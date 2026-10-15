@@ -7,7 +7,6 @@ import {
   PayloadTooLargeError,
   ServiceUnavailableError,
   ValidationError,
-  mapDatabaseError,
 } from '../../core/errors';
 import type { Logger } from '../../core/logger/logger';
 
@@ -44,17 +43,12 @@ export function toAppError(error: unknown): AppError {
     );
   }
 
-  return (
-    mapDatabaseError(error) ??
-    new AppError(
-      ErrorCode.INTERNAL_ERROR,
-      500,
-      'An unexpected error occurred',
-      undefined,
-      {
-        cause: error,
-      },
-    )
+  return new AppError(
+    ErrorCode.INTERNAL_ERROR,
+    500,
+    'An unexpected error occurred',
+    undefined,
+    { cause: error },
   );
 }
 

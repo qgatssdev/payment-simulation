@@ -23,7 +23,6 @@ const LOG_LEVELS = [
   'silent',
 ] as const;
 const NODE_ENVS = ['development', 'test', 'production'] as const;
-const POSTGRES_URL = { protocols: ['postgres', 'postgresql'], require_tld: false };
 
 const csv = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string'
@@ -32,9 +31,6 @@ const csv = ({ value }: { value: unknown }): unknown =>
         .map((s) => s.trim())
         .filter(Boolean)
     : value;
-
-const emptyToUndefined = ({ value }: { value: unknown }): unknown =>
-  value === '' ? undefined : value;
 
 const bool = ({ value }: { value: unknown }): unknown =>
   value === 'true' ? true : value === 'false' ? false : value;
@@ -66,30 +62,12 @@ export class Configuration {
   @Min(0)
   TRUST_PROXY = 0;
 
-  @IsUrl(POSTGRES_URL)
-  DATABASE_URL!: string;
-
-  /** Direct (non-pooled) connection, required by LISTEN/NOTIFY. Falls back to DATABASE_URL. */
-  @IsOptional()
-  @Transform(emptyToUndefined)
-  @IsUrl(POSTGRES_URL)
-  DATABASE_URL_UNPOOLED?: string;
-
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(100)
-  DATABASE_POOL_MAX = 10;
-
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  DATABASE_STATEMENT_TIMEOUT_MS = 10_000;
-
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  DATABASE_SLOW_QUERY_MS = 500;
+  /**
+   * JSON file the data is persisted to, relative to the working directory. Set it to an empty
+   * string to keep everything in memory (lost on restart). One process per file.
+   */
+  @IsString()
+  DATA_FILE = './data/payments.json';
 
   @Type(() => Number)
   @IsInt()
@@ -142,7 +120,7 @@ export class Configuration {
   @IsBoolean()
   WORKER_ENABLED = true;
 
-  /** Jobs processed in parallel per process. Keep below DATABASE_POOL_MAX. */
+  /** Jobs processed in parallel per process. */
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -216,10 +194,6 @@ export class Configuration {
 
   get isProduction(): boolean {
     return this.NODE_ENV === 'production';
-  }
-
-  get databaseUrlUnpooled(): string {
-    return this.DATABASE_URL_UNPOOLED ?? this.DATABASE_URL;
   }
 
   get buildSha(): string {

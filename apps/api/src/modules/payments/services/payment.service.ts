@@ -16,8 +16,8 @@ import {
   PaymentEventType,
   PaymentStatus,
 } from '@payment-sim/shared';
-import type { DataSource } from 'typeorm';
 import type { PaymentGateway } from '../../../infra/gateway/payment-gateway';
+import type { PaymentStore } from '../../../infra/store/payment-store';
 import { decodeCursor, encodeCursor } from '../../../libs/common/http/cursor';
 import { BaseResponse } from '../../../libs/core/base/base.response';
 import { ConflictError, NotFoundError } from '../../../libs/core/errors';
@@ -43,13 +43,13 @@ import type { PaymentRepository } from '../repository/payment.repository';
 import { fingerprintCreatePayment } from './request-fingerprint';
 
 export interface PaymentServiceDeps {
-  dataSource: DataSource;
+  store: PaymentStore;
   payments: PaymentRepository;
   events: PaymentEventRepository;
   jobs: JobRepository;
   idempotencyKeys: IdempotencyKeyRepository;
   gateway: Pick<PaymentGateway, 'tokenize'>;
-  /** Announces committed events and enqueued jobs to every instance. */
+  /** Announces committed events and enqueued jobs once their transaction is durable. */
   publisher: PaymentEventPublisher;
   logger: Logger;
   clock?: () => Date;
@@ -58,8 +58,6 @@ export interface PaymentServiceDeps {
   maxTransitionAttempts?: number;
   /** Gateway attempts allowed per payment, recorded on its job. */
   jobMaxAttempts?: number;
-  /** Called after a payment's job is committed, so a local worker can pick it up at once. */
-  onJobEnqueued?: () => void;
 }
 
 export interface CreatePaymentOutcome {
@@ -113,8 +111,8 @@ export class PaymentService {
     const requestHash = fingerprintCreatePayment(dto);
     const now = this.clock();
 
-    const outcome = await this.deps.dataSource.transaction(async (manager) => {
-      const keys = this.deps.idempotencyKeys.withTransaction(manager);
+    return this.deps.store.transaction(async (tx) => {
+      const keys = this.deps.idempotencyKeys.withTransaction(tx);
       const claim = await keys.claim(
         idempotencyKey,
         requestHash,
@@ -138,33 +136,30 @@ export class PaymentService {
       }
 
       const card = this.deps.gateway.tokenize(dto.card);
-      const payments = this.deps.payments.withTransaction(manager);
-      const payment = await payments.save(
-        payments.create({
-          amount: dto.amount,
-          currency: dto.currency,
-          customerEmail: dto.customerEmail,
-          description: dto.description ?? null,
-          paymentMethod: {
-            token: card.token,
-            brand: card.brand,
-            last4: card.last4,
-            expMonth: dto.card.expMonth,
-            expYear: dto.card.expYear,
-          },
-        }),
-      );
-      const created = await this.deps.events.withTransaction(manager).append({
+      const payment = await this.deps.payments.withTransaction(tx).insert({
+        amount: dto.amount,
+        currency: dto.currency,
+        customerEmail: dto.customerEmail,
+        description: dto.description ?? null,
+        paymentMethod: {
+          token: card.token,
+          brand: card.brand,
+          last4: card.last4,
+          expMonth: dto.card.expMonth,
+          expYear: dto.card.expYear,
+        },
+      });
+      const created = await this.deps.events.withTransaction(tx).append({
         paymentId: payment.id,
         type: PaymentEventType.CREATED,
         toStatus: payment.status,
         metadata: { amount: payment.amount, currency: payment.currency, ...this.trace() },
       });
       await this.deps.jobs
-        .withTransaction(manager)
+        .withTransaction(tx)
         .enqueuePaymentProcessing(payment.id, this.deps.jobMaxAttempts);
-      await this.deps.publisher.paymentEvent(manager, toStreamMessage(payment, created));
-      await this.deps.publisher.jobEnqueued(manager);
+      this.deps.publisher.paymentEvent(tx, toStreamMessage(payment, created));
+      this.deps.publisher.jobEnqueued(tx);
 
       const body = BaseResponse.success(
         toPaymentView(payment),
@@ -178,9 +173,6 @@ export class PaymentService {
       );
       return { statusCode: 202, body, replayed: false };
     });
-
-    if (!outcome.replayed) this.deps.onJobEnqueued?.();
-    return outcome;
   }
 
   async get(id: string): Promise<Payment> {
@@ -310,7 +302,8 @@ export class PaymentService {
 
   /**
    * Read → apply the change → write only if the version is unchanged, with its audit event
-   * in the same transaction. No row lock is held while deciding. If another writer wins the
+   * in the same transaction. Nothing is locked while deciding (the gateway call can sit
+   * between a read and the write). If another writer wins the
    * race, re-read and re-apply: a cancel that loses to the worker moving the payment to
    * PROCESSING is then rejected as an invalid transition instead of overwriting it. With
    * If-Match the caller asked for "this exact version", so a moved payment is a 412.
@@ -328,20 +321,17 @@ export class PaymentService {
       }
 
       const event = change(payment);
-      const saved = await this.deps.dataSource.transaction(async (manager) => {
+      const saved = await this.deps.store.transaction(async (tx) => {
         const updated = await this.deps.payments
-          .withTransaction(manager)
+          .withTransaction(tx)
           .updateIfVersion(payment, readVersion);
         if (!updated) return null;
-        const appended = await this.deps.events.withTransaction(manager).append({
+        const appended = await this.deps.events.withTransaction(tx).append({
           ...event,
           paymentId: id,
           metadata: { ...this.trace(), ...event.metadata },
         });
-        await this.deps.publisher.paymentEvent(
-          manager,
-          toStreamMessage(updated, appended),
-        );
+        this.deps.publisher.paymentEvent(tx, toStreamMessage(updated, appended));
         return updated;
       });
 

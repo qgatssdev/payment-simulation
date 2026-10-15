@@ -10,3 +10,5 @@ coverage/
 artifacts/
 .DS_Store
 *.log
+# Local JSON data files (DATA_FILE) and their lock files
+data/

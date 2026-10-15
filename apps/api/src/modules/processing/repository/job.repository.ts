@@ -1,121 +1,149 @@
-import type { EntityManager } from 'typeorm';
-import { In, LessThan } from 'typeorm';
+import { randomUUID } from 'node:crypto';
+import type { PaymentStore, StoreTx } from '../../../infra/store/payment-store';
 import { BaseRepository } from '../../../libs/core/base/base.repository';
-import { Job, JobStatus, JobType } from '../entity/job.entity';
+import { ConflictError } from '../../../libs/core/errors';
+import type { Job } from '../entity/job.entity';
+import { JobStatus, JobType } from '../entity/job.entity';
 
-export class JobRepository extends BaseRepository<Job> {
-  constructor(manager: EntityManager) {
-    super(manager.getRepository(Job));
+const ACTIVE = new Set([JobStatus.QUEUED, JobStatus.RUNNING]);
+const DEFAULT_MAX_ATTEMPTS = 5;
+
+export class JobRepository extends BaseRepository<'jobs'> {
+  constructor(store: PaymentStore, tx?: StoreTx) {
+    super(store, 'jobs', tx);
   }
 
   /**
    * Called inside the transaction that creates the payment, so a payment can never exist
-   * without its processing job (and vice versa): the job row is the outbox.
+   * without its processing job (and vice versa). At most one active job per payment.
    */
   enqueuePaymentProcessing(paymentId: string, maxAttempts?: number): Promise<Job> {
-    return this.save(
-      this.create({
+    return this.write((tx) => {
+      if (
+        tx.find('jobs', (j) => j.paymentId === paymentId && ACTIVE.has(j.status)).length
+      ) {
+        throw new ConflictError(
+          `Payment ${paymentId} already has an active processing job`,
+        );
+      }
+      const now = this.now();
+      const job: Job = {
+        id: randomUUID(),
         type: JobType.PROCESS_PAYMENT,
         paymentId,
-        ...(maxAttempts ? { maxAttempts } : {}),
-      }),
-    );
+        status: JobStatus.QUEUED,
+        attempts: 0,
+        maxAttempts: maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+        runAt: now,
+        lockedAt: null,
+        lockedBy: null,
+        lastError: null,
+        completedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      tx.put('jobs', job);
+      return job;
+    });
+  }
+
+  findForPayment(paymentId: string): Promise<Job[]> {
+    return Promise.resolve(this.reader.find('jobs', (j) => j.paymentId === paymentId));
   }
 
   /**
-   * Claim up to `limit` due jobs for `workerId`. FOR UPDATE SKIP LOCKED makes concurrent
-   * claimers (other workers, other instances) skip rows someone else is claiming instead of
-   * blocking on them or taking them twice. The attempt counter is bumped at claim time, so a
-   * job that crashes its worker still uses up an attempt and cannot crash-loop forever.
+   * Claim up to `limit` due jobs for `workerId`, oldest due first. Claims run in serialized
+   * transactions, so concurrent workers can never take the same job. The attempt counter is
+   * bumped at claim time, so a job that crashes its worker still uses up an attempt and cannot
+   * crash-loop forever.
    */
   claimDue(limit: number, workerId: string, now: Date): Promise<Job[]> {
-    return this.manager.transaction(async (manager) => {
-      const due = await manager
-        .getRepository(Job)
-        .createQueryBuilder('job')
-        .where('job.status = :status', { status: JobStatus.QUEUED })
-        .andWhere('job.runAt <= :now', { now })
-        .orderBy('job.runAt', 'ASC')
-        .limit(limit)
-        .setLock('pessimistic_write')
-        .setOnLocked('skip_locked')
-        .getMany();
-      if (due.length === 0) return [];
-
-      for (const job of due) {
-        job.status = JobStatus.RUNNING;
-        job.attempts += 1;
-        job.lockedAt = now;
-        job.lockedBy = workerId;
-      }
-      await manager.getRepository(Job).save(due);
-      return due;
+    return this.write((tx) => {
+      const due = tx
+        .find('jobs', (j) => j.status === JobStatus.QUEUED && j.runAt <= now)
+        .sort((a, b) => a.runAt.getTime() - b.runAt.getTime())
+        .slice(0, limit);
+      return due.map((job) => {
+        const claimed: Job = {
+          ...job,
+          status: JobStatus.RUNNING,
+          attempts: job.attempts + 1,
+          lockedAt: now,
+          lockedBy: workerId,
+          updatedAt: now,
+        };
+        tx.put('jobs', claimed);
+        return claimed;
+      });
     });
   }
 
   /**
-   * Every settle below is fenced on (status = running, locked_by = this worker): if the job's
+   * Every settle below is fenced on (status = running, lockedBy = this worker): if the job's
    * lock was reclaimed because this worker looked dead, a late result from it changes nothing.
    * Returns whether the write applied.
    */
   complete(job: Job, now: Date): Promise<boolean> {
-    return this.settle(job, {
-      status: JobStatus.COMPLETED,
-      completedAt: now,
-      lockedAt: null,
-      lockedBy: null,
-    });
+    return this.settle(job, now, { status: JobStatus.COMPLETED, completedAt: now });
   }
 
   retryAt(job: Job, runAt: Date, error: string): Promise<boolean> {
-    return this.settle(job, {
+    return this.settle(job, this.now(), {
       status: JobStatus.QUEUED,
       runAt,
       lastError: error,
-      lockedAt: null,
-      lockedBy: null,
     });
   }
 
   fail(job: Job, error: string, now: Date): Promise<boolean> {
-    return this.settle(job, {
+    return this.settle(job, now, {
       status: JobStatus.FAILED,
       lastError: error,
       completedAt: now,
-      lockedAt: null,
-      lockedBy: null,
     });
   }
 
-  /** Re-queue running jobs whose worker has gone quiet for longer than the lock timeout. */
-  async reclaimStale(lockedBefore: Date): Promise<string[]> {
-    const stale = await this.repository.find({
-      select: { id: true },
-      where: { status: JobStatus.RUNNING, lockedAt: LessThan(lockedBefore) },
+  /** Re-queue running jobs whose lock is older than `lockedBefore`. Returns their ids. */
+  reclaimStale(lockedBefore: Date): Promise<string[]> {
+    return this.write((tx) => {
+      const stale = tx.find(
+        'jobs',
+        (j) =>
+          j.status === JobStatus.RUNNING &&
+          j.lockedAt !== null &&
+          j.lockedAt < lockedBefore,
+      );
+      for (const job of stale) {
+        tx.put('jobs', {
+          ...job,
+          status: JobStatus.QUEUED,
+          lockedAt: null,
+          lockedBy: null,
+          updatedAt: this.now(),
+        });
+      }
+      return stale.map((j) => j.id);
     });
-    if (stale.length === 0) return [];
-    const result = await this.repository
-      .createQueryBuilder()
-      .update()
-      .set({ status: JobStatus.QUEUED, lockedAt: null, lockedBy: null })
-      .where({ id: In(stale.map((j) => j.id)), status: JobStatus.RUNNING })
-      .andWhere('locked_at < :lockedBefore', { lockedBefore })
-      .returning(['id'])
-      .execute();
-    return (result.raw as Array<{ id: string }>).map((row) => row.id);
   }
 
-  private async settle(job: Job, changes: Partial<Job>): Promise<boolean> {
-    const result = await this.repository
-      .createQueryBuilder()
-      .update()
-      .set(changes)
-      .where('id = :id AND status = :running AND locked_by = :worker', {
-        id: job.id,
-        running: JobStatus.RUNNING,
-        worker: job.lockedBy,
-      })
-      .execute();
-    return (result.affected ?? 0) > 0;
+  private settle(job: Job, now: Date, changes: Partial<Job>): Promise<boolean> {
+    return this.write((tx) => {
+      const current = tx.get('jobs', job.id);
+      if (
+        !current ||
+        current.status !== JobStatus.RUNNING ||
+        current.lockedBy !== job.lockedBy
+      ) {
+        return false;
+      }
+      tx.put('jobs', {
+        ...current,
+        ...changes,
+        lockedAt: null,
+        lockedBy: null,
+        updatedAt: now,
+      });
+      return true;
+    });
   }
 }

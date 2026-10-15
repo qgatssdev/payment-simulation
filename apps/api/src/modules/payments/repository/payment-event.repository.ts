@@ -1,8 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import type { PaymentEventType, PaymentStatus } from '@payment-sim/shared';
-import type { EntityManager } from 'typeorm';
-import { MoreThan } from 'typeorm';
+import type { PaymentStore, StoreTx } from '../../../infra/store/payment-store';
 import { BaseRepository } from '../../../libs/core/base/base.repository';
-import { PaymentEvent } from '../entity/payment-event.entity';
+import type { PaymentEvent } from '../entity/payment-event.entity';
 
 export interface NewPaymentEvent {
   paymentId: string;
@@ -13,25 +13,38 @@ export interface NewPaymentEvent {
   metadata?: Record<string, unknown>;
 }
 
-export class PaymentEventRepository extends BaseRepository<PaymentEvent> {
-  constructor(manager: EntityManager) {
-    super(manager.getRepository(PaymentEvent));
+const SEQUENCE = 'paymentEvents';
+const bySequence = (a: PaymentEvent, b: PaymentEvent) => a.sequence - b.sequence;
+
+export class PaymentEventRepository extends BaseRepository<'paymentEvents'> {
+  constructor(store: PaymentStore, tx?: StoreTx) {
+    super(store, 'paymentEvents', tx);
   }
 
+  /** The sequence is drawn inside the same transaction, so it commits or rolls back with it. */
   append(event: NewPaymentEvent): Promise<PaymentEvent> {
-    return this.save(
-      this.create({
+    return this.write((tx) => {
+      const record: PaymentEvent = {
+        id: randomUUID(),
+        sequence: tx.nextSequence(SEQUENCE),
+        createdAt: this.now(),
         fromStatus: null,
         toStatus: null,
         reason: null,
         metadata: {},
         ...event,
-      }),
-    );
+      };
+      tx.put('paymentEvents', record);
+      return record;
+    });
   }
 
   listForPayment(paymentId: string): Promise<PaymentEvent[]> {
-    return this.repository.find({ where: { paymentId }, order: { sequence: 'ASC' } });
+    return Promise.resolve(
+      this.reader
+        .find('paymentEvents', (e) => e.paymentId === paymentId)
+        .sort(bySequence),
+    );
   }
 
   /** Events after a sequence number, oldest first: the replay for a resuming stream. */
@@ -40,10 +53,14 @@ export class PaymentEventRepository extends BaseRepository<PaymentEvent> {
     limit: number,
     paymentId?: string,
   ): Promise<PaymentEvent[]> {
-    return this.repository.find({
-      where: { sequence: MoreThan(afterSequence), ...(paymentId ? { paymentId } : {}) },
-      order: { sequence: 'ASC' },
-      take: limit,
-    });
+    return Promise.resolve(
+      this.reader
+        .find(
+          'paymentEvents',
+          (e) => e.sequence > afterSequence && (!paymentId || e.paymentId === paymentId),
+        )
+        .sort(bySequence)
+        .slice(0, limit),
+    );
   }
 }

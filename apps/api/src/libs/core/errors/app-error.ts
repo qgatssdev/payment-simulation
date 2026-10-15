@@ -6,7 +6,7 @@ export type ErrorDetails = ApiErrorBody['error']['details'];
 /**
  * Base for every error the API deliberately returns. Services throw these; the single error
  * middleware turns them into responses. Anything that is not an AppError is a bug or an
- * infrastructure failure and is reported as a generic 500 (or 503, see mapDatabaseError).
+ * infrastructure failure and is reported as a generic 500.
  */
 export class AppError extends Error {
   constructor(

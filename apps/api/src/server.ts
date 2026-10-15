@@ -36,7 +36,12 @@ async function main(): Promise<void> {
   const app = createApp(container);
 
   const server = app.listen(config.PORT, () => {
-    if (config.WORKER_ENABLED) container.worker.start();
+    if (config.WORKER_ENABLED) {
+      container.worker.start().catch((err: unknown) => {
+        logger.fatal({ err }, 'worker failed to start');
+        process.exit(1);
+      });
+    }
     logger.info(
       { port: config.PORT, env: config.NODE_ENV, version: config.buildSha },
       'listening',

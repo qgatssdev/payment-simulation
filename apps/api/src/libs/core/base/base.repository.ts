@@ -1,49 +1,48 @@
 import type {
-  DeepPartial,
-  EntityManager,
-  FindOptionsWhere,
-  ObjectLiteral,
-  Repository,
-} from 'typeorm';
+  PaymentCollections,
+  PaymentStore,
+  StoreTx,
+} from '../../../infra/store/payment-store';
+
+type Collection = keyof PaymentCollections;
+type Reader = Pick<StoreTx, 'get' | 'find'>;
 
 /**
- * Thin wrapper over a TypeORM Repository, kept from the nest-template. Subclasses take an
- * EntityManager so the same repository can be rebound to a transaction with
- * withTransaction(manager): every write in a unit of work then shares one connection.
+ * Kept from the nest-template: a thin repository per aggregate, rebindable to a unit of work
+ * with withTransaction(tx) so every write in a business operation commits (or rolls back)
+ * together. Unbound, each write runs in its own transaction.
  *
  * Deliberately smaller than the template's version: no generic filterBy/orderBy/search taking
- * column names from the caller. Each repository exposes the specific, indexed queries it
- * supports instead.
+ * field names from the caller. Each repository exposes the specific queries it supports.
  */
-export abstract class BaseRepository<T extends ObjectLiteral & { id: string }> {
-  protected constructor(protected readonly repository: Repository<T>) {}
+export abstract class BaseRepository<K extends Collection> {
+  protected constructor(
+    protected readonly store: PaymentStore,
+    protected readonly collection: K,
+    protected readonly tx?: StoreTx,
+  ) {}
 
-  protected get manager(): EntityManager {
-    return this.repository.manager;
+  withTransaction(tx: StoreTx): this {
+    const Ctor = this.constructor as new (store: PaymentStore, tx?: StoreTx) => this;
+    return new Ctor(this.store, tx);
   }
 
-  withTransaction(manager: EntityManager): this {
-    const Ctor = this.constructor as new (manager: EntityManager) => this;
-    return new Ctor(manager);
+  /** Inside a bound transaction: its view (including its own writes); else committed state. */
+  protected get reader(): Reader {
+    return this.tx ?? this.store;
   }
 
-  create(data: DeepPartial<T>): T {
-    return this.repository.create(data);
+  protected write<T>(work: (tx: StoreTx) => T | Promise<T>): Promise<T> {
+    return this.tx ? Promise.resolve(work(this.tx)) : this.store.transaction(work);
   }
 
-  save(entity: T): Promise<T> {
-    return this.repository.save(entity);
+  protected now(): Date {
+    return this.store.now();
   }
 
-  findById(id: string): Promise<T | null> {
-    return this.repository.findOneBy({ id } as FindOptionsWhere<T>);
-  }
-
-  exists(where: FindOptionsWhere<T>): Promise<boolean> {
-    return this.repository.existsBy(where);
-  }
-
-  count(where?: FindOptionsWhere<T>): Promise<number> {
-    return this.repository.countBy(where ?? {});
+  count(
+    predicate?: (record: Readonly<PaymentCollections[K]>) => boolean,
+  ): Promise<number> {
+    return Promise.resolve(this.reader.find(this.collection, predicate).length);
   }
 }

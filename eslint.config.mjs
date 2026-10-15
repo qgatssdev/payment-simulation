@@ -44,7 +44,7 @@ export default tseslint.config(
   },
   {
     // Tests assert on untyped HTTP bodies (supertest's res.body is `any`).
-    files: ['**/*.spec.ts', '**/*.int-spec.ts', '**/test/**/*.ts'],
+    files: ['**/*.spec.ts', '**/test/**/*.ts'],
     rules: {
       '@typescript-eslint/no-unsafe-member-access': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',

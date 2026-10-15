@@ -1,17 +1,17 @@
 import { ErrorCode, PaymentEventType, PaymentStatus } from '@payment-sim/shared';
 import type { Express } from 'express';
 import request from 'supertest';
-import type { DataSource } from 'typeorm';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { PaymentCollections, PaymentStore } from '../../infra/store/payment-store';
 import {
-  closeIntegrationApps,
-  createIntegrationApp,
-  createTestDataSource,
-  truncateAll,
-} from '../../test/database';
-import { Job, JobStatus } from '../processing/entity/job.entity';
-import { IdempotencyKey } from './entity/idempotency-key.entity';
-import { PaymentEvent } from './entity/payment-event.entity';
-import { Payment } from './entity/payment.entity';
+  closeTestApps,
+  createTestApp,
+  createTestStore,
+  patchRecord,
+} from '../../test/app';
+import { JobStatus } from '../processing/entity/job.entity';
 
 const nextYear = new Date().getUTCFullYear() + 1;
 
@@ -25,7 +25,7 @@ const paymentBody = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('payments API', () => {
-  let dataSource: DataSource;
+  let store: PaymentStore;
   let app: Express;
   let keySeq = 0;
   const freshKey = () => `test-key-${Date.now()}-${++keySeq}`;
@@ -33,24 +33,22 @@ describe('payments API', () => {
   const createPayment = (body = paymentBody(), key = freshKey()) =>
     request(app).post('/api/v1/payments').set('Idempotency-Key', key).send(body);
 
-  const count = (entity: typeof Payment | typeof PaymentEvent | typeof Job) =>
-    dataSource.getRepository(entity).count();
+  const count = (collection: keyof PaymentCollections) => store.count(collection);
+  const eventsOf = (paymentId: string) =>
+    store
+      .find('paymentEvents', (e) => e.paymentId === paymentId)
+      .sort((a, b) => a.sequence - b.sequence);
 
-  /** Move a payment along the system path directly, as the worker will in step 5. */
+  /** Move a payment along the system path directly, as the worker would. */
   const forceStatus = (id: string, status: PaymentStatus) =>
-    dataSource.getRepository(Payment).update(id, { status });
+    patchRecord(store, 'payments', id, { status });
 
-  beforeAll(async () => {
-    dataSource = await createTestDataSource();
-    ({ app } = await createIntegrationApp(dataSource));
+  beforeEach(async () => {
+    store = await createTestStore();
+    ({ app } = await createTestApp(store));
   });
 
-  beforeEach(() => truncateAll(dataSource));
-
-  afterAll(async () => {
-    await closeIntegrationApps();
-    await dataSource.destroy();
-  });
+  afterEach(() => closeTestApps());
 
   describe('POST /payments', () => {
     it('accepts a payment for async processing', async () => {
@@ -85,21 +83,33 @@ describe('payments API', () => {
     });
 
     it('never stores or returns the card number or CVC', async () => {
-      const res = await createPayment();
-      expect(JSON.stringify(res.body)).not.toMatch(/4242424242424242|"cvc"/);
+      const dir = await mkdtemp(join(tmpdir(), 'payments-'));
+      const file = join(dir, 'data.json');
+      const fileStore = await createTestStore({ file });
+      try {
+        const { app: fileApp } = await createTestApp(fileStore);
+        const res = await request(fileApp)
+          .post('/api/v1/payments')
+          .set('Idempotency-Key', freshKey())
+          .send(paymentBody());
+        expect(res.status).toBe(202);
+        expect(JSON.stringify(res.body)).not.toMatch(/4242424242424242|"cvc"/);
 
-      const rows = await dataSource.query<unknown[]>(
-        `SELECT p.*, k.response_body, k.request_hash FROM payments p
-         JOIN idempotency_keys k ON k.payment_id = p.id`,
-      );
-      expect(JSON.stringify(rows)).not.toMatch(/4242424242424242|"123"/);
+        // The data file is what persists: it holds the token and last4, never the PAN or CVC.
+        const contents = await readFile(file, 'utf8');
+        expect(contents).toContain('"last4": "4242"');
+        expect(contents).toContain('"token": "tok_sim_succeed_');
+        expect(contents).not.toMatch(/4242424242424242|"cvc"|"123"/);
+      } finally {
+        await closeTestApps();
+        await fileStore.close();
+        await rm(dir, { recursive: true, force: true });
+      }
     });
 
     it('records the created event and enqueues exactly one processing job, atomically', async () => {
       const { body } = await createPayment();
-      const events = await dataSource.getRepository(PaymentEvent).findBy({
-        paymentId: body.data.id,
-      });
+      const events = eventsOf(body.data.id);
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({
         type: PaymentEventType.CREATED,
@@ -107,9 +117,7 @@ describe('payments API', () => {
         metadata: { amount: 250_000, currency: 'NGN' },
       });
 
-      const jobs = await dataSource
-        .getRepository(Job)
-        .findBy({ paymentId: body.data.id });
+      const jobs = store.find('jobs', (j) => j.paymentId === body.data.id);
       expect(jobs).toHaveLength(1);
       expect(jobs[0]?.status).toBe(JobStatus.QUEUED);
     });
@@ -118,7 +126,7 @@ describe('payments API', () => {
       const res = await request(app).post('/api/v1/payments').send(paymentBody());
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-      expect(await count(Payment)).toBe(0);
+      expect(count('payments')).toBe(0);
     });
 
     it('rejects a malformed Idempotency-Key', async () => {
@@ -138,8 +146,8 @@ describe('payments API', () => {
       expect(fields).toEqual(
         expect.arrayContaining(['amount', 'card.number', 'card.cvc']),
       );
-      expect(await count(Payment)).toBe(0);
-      expect(await dataSource.getRepository(IdempotencyKey).count()).toBe(0);
+      expect(count('payments')).toBe(0);
+      expect(count('idempotencyKeys')).toBe(0);
     });
   });
 
@@ -167,8 +175,8 @@ describe('payments API', () => {
       expect(second.status).toBe(202);
       expect(second.headers['idempotent-replayed']).toBe('true');
       expect(second.body).toEqual(first.body);
-      expect(await count(Payment)).toBe(1);
-      expect(await count(Job)).toBe(1);
+      expect(count('payments')).toBe(1);
+      expect(count('jobs')).toBe(1);
     });
 
     it('rejects the same key reused for a different request', async () => {
@@ -177,7 +185,7 @@ describe('payments API', () => {
       const res = await createPayment(paymentBody({ amount: 999 }), key);
       expect(res.status).toBe(422);
       expect(res.body.error.code).toBe(ErrorCode.IDEMPOTENCY_KEY_REUSED);
-      expect(await count(Payment)).toBe(1);
+      expect(count('payments')).toBe(1);
     });
 
     it('creates exactly one payment when duplicates race', async () => {
@@ -189,16 +197,16 @@ describe('payments API', () => {
       expect(responses.map((r) => r.status)).toEqual(Array(8).fill(202));
       expect(new Set(responses.map((r) => r.body.data.id)).size).toBe(1);
       expect(responses.filter((r) => r.headers['idempotent-replayed']).length).toBe(7);
-      expect(await count(Payment)).toBe(1);
-      expect(await count(Job)).toBe(1);
+      expect(count('payments')).toBe(1);
+      expect(count('jobs')).toBe(1);
     });
 
     it('lets an expired key be used again', async () => {
       const key = freshKey();
       const first = await createPayment(paymentBody(), key);
-      await dataSource
-        .getRepository(IdempotencyKey)
-        .update({ key }, { expiresAt: new Date(Date.now() - 1000) });
+      await patchRecord(store, 'idempotencyKeys', key, {
+        expiresAt: new Date(Date.now() - 1000),
+      });
 
       const second = await createPayment(paymentBody(), key);
       expect(second.status).toBe(202);
@@ -257,10 +265,7 @@ describe('payments API', () => {
       expect(res.body.data).toMatchObject({ status: 'CANCELLED', version: 2 });
       expect(res.headers.etag).toBe('"2"');
 
-      const events = await dataSource.getRepository(PaymentEvent).find({
-        where: { paymentId: body.data.id },
-        order: { sequence: 'ASC' },
-      });
+      const events = eventsOf(body.data.id);
       expect(events.map((e) => e.type)).toEqual([
         PaymentEventType.CREATED,
         PaymentEventType.STATUS_CHANGED,
@@ -294,7 +299,7 @@ describe('payments API', () => {
           details: { from: 'FAILED', to: 'REFUNDED', allowed: [] },
         },
       });
-      expect(await count(PaymentEvent)).toBe(1);
+      expect(count('paymentEvents')).toBe(1);
     });
 
     it('does not let clients set system-only statuses', async () => {
@@ -354,14 +359,11 @@ describe('payments API', () => {
           ),
       ).toBe(true);
 
-      const changes = await dataSource.getRepository(PaymentEvent).countBy({
-        paymentId: body.data.id,
-        type: PaymentEventType.STATUS_CHANGED,
-      });
-      expect(changes).toBe(1);
-      const final = await dataSource
-        .getRepository(Payment)
-        .findOneByOrFail({ id: body.data.id });
+      const changes = eventsOf(body.data.id).filter(
+        (e) => e.type === PaymentEventType.STATUS_CHANGED,
+      );
+      expect(changes).toHaveLength(1);
+      const final = store.get('payments', body.data.id);
       expect(final).toMatchObject({ status: 'CANCELLED', version: 2 });
     });
 

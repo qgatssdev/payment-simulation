@@ -95,7 +95,6 @@ Server-Sent Events (\`text/event-stream\`). Each frame's \`id\` is the event seq
 | \`${PaymentEventType.STATUS_CHANGED}\` | lifecycle transition |
 | \`${PaymentEventType.ATTEMPT_FAILED}\` | a retryable gateway attempt failed; a retry is scheduled |
 | \`snapshot\` | (per-payment stream, fresh connections only) current payment, no id |
-| \`resync\` | live delivery had a gap; refetch current state |
 
 Comment lines (\`: ping\`) are heartbeats. Reconnecting with \`Last-Event-ID\` replays what was missed.`;
 
@@ -451,7 +450,7 @@ export function buildOpenApiDocument(version: string): OpenAPIObject {
           operationId: 'readiness',
           summary: 'Readiness',
           description:
-            'Critical dependencies (database) answer. Realtime is reported but non-critical.',
+            'Storage is writable: the last data-file write succeeded (probing retries a failed one).',
           responses: {
             '200': { description: 'Ready.', content: json(ref('Readiness')) },
             '503': { description: 'Not ready.', content: json(ref('Readiness')) },

@@ -1,57 +1,54 @@
 import { ErrorCode, PaymentFailureCode, PaymentStatus } from '@payment-sim/shared';
-import type { DataSource } from 'typeorm';
+import type { PaymentStore } from '../../../infra/store/payment-store';
 import { AppError } from '../../../libs/core/errors';
 import {
-  closeIntegrationApps,
-  createIntegrationApp,
-  createTestDataSource,
-  truncateAll,
-} from '../../../test/database';
-import { Payment } from '../entity/payment.entity';
+  closeTestApps,
+  createTestApp,
+  createTestStore,
+  patchRecord,
+} from '../../../test/app';
+import type { Payment } from '../entity/payment.entity';
 import { PaymentRepository } from '../repository/payment.repository';
 import type { PaymentService } from './payment.service';
 
 const NOW = new Date('2026-10-15T12:00:00.000Z');
 
 describe('PaymentService.transition under contention', () => {
-  let dataSource: DataSource;
+  let store: PaymentStore;
   let service: PaymentService;
 
-  beforeAll(async () => {
-    dataSource = await createTestDataSource();
+  beforeEach(async () => {
+    store = await createTestStore({ clock: () => NOW });
     ({
       container: { paymentService: service },
-    } = await createIntegrationApp(dataSource, { clock: () => NOW }));
+    } = await createTestApp(store, { clock: () => NOW }));
   });
 
-  beforeEach(() => truncateAll(dataSource));
-  afterEach(() => jest.restoreAllMocks());
-  afterAll(async () => {
-    await closeIntegrationApps();
-    await dataSource.destroy();
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await closeTestApps();
   });
 
-  async function pendingPayment(): Promise<Payment> {
-    const payments = dataSource.getRepository(Payment);
-    return payments.save(
-      payments.create({
-        amount: 1000,
-        currency: 'USD',
-        customerEmail: 'ada@example.com',
-        paymentMethod: {
-          token: 'tok_sim_succeed_0123456789abcdef',
-          brand: 'visa',
-          last4: '4242',
-          expMonth: 1,
-          expYear: 2030,
-        } as never,
-      }),
-    );
+  function pendingPayment(): Promise<Payment> {
+    return new PaymentRepository(store).insert({
+      amount: 1000,
+      currency: 'USD',
+      customerEmail: 'ada@example.com',
+      description: null,
+      paymentMethod: {
+        token: 'tok_sim_succeed_0123456789abcdef',
+        brand: 'visa',
+        last4: '4242',
+        expMonth: 1,
+        expYear: 2030,
+      } as Payment['paymentMethod'],
+    });
   }
 
   /**
-   * Let another writer change the row after the service has read it but before its
-   * conditional UPDATE runs — the exact window optimistic locking exists for.
+   * Let another writer commit right after the service has read the payment, before its own
+   * transaction: the window optimistic locking exists for. (Store transactions themselves are
+   * serialized, so this gap between read and write is the only place a race can happen.)
    */
   function interleave(
     times: number,
@@ -59,48 +56,49 @@ describe('PaymentService.transition under contention', () => {
   ) {
     // Taken unbound on purpose: the spy re-binds it with .call(this, ...).
     // eslint-disable-next-line @typescript-eslint/unbound-method
-    const original = PaymentRepository.prototype.updateIfVersion;
+    const read = PaymentRepository.prototype.findById;
     let remaining = times;
-    return jest
-      .spyOn(PaymentRepository.prototype, 'updateIfVersion')
-      .mockImplementation(async function (this: PaymentRepository, payment, version) {
-        if (remaining-- > 0) await concurrentWrite(payment.id);
-        return original.call(this, payment, version);
+    jest
+      .spyOn(PaymentRepository.prototype, 'findById')
+      .mockImplementation(async function (this: PaymentRepository, id) {
+        const snapshot = await read.call(this, id);
+        if (remaining-- > 0) await concurrentWrite(id);
+        return snapshot;
       });
+    return jest.spyOn(PaymentRepository.prototype, 'updateIfVersion');
   }
 
-  const bumpVersion = (id: string) =>
-    dataSource.query('UPDATE payments SET version = version + 1 WHERE id = $1', [id]);
+  const bumpVersion = async (id: string) => {
+    const current = store.get('payments', id);
+    await patchRecord(store, 'payments', id, { version: (current?.version ?? 0) + 1 });
+  };
 
   it('re-validates after losing a race instead of overwriting the winner', async () => {
     const payment = await pendingPayment();
     // The worker moves the payment on while the client's cancel is in flight.
-    const spy = interleave(1, (id) =>
-      dataSource.query(
-        `UPDATE payments SET status = 'PROCESSING', version = version + 1 WHERE id = $1`,
-        [id],
-      ),
+    const writes = interleave(1, (id) =>
+      patchRecord(store, 'payments', id, {
+        status: PaymentStatus.PROCESSING,
+        version: 2,
+      }),
     );
 
     const error = await service
       .transition(payment.id, PaymentStatus.CANCELLED, 'client')
       .catch((e: unknown) => e);
 
-    expect(spy).toHaveBeenCalledTimes(1);
+    expect(writes).toHaveBeenCalledTimes(1);
     expect(error).toBeInstanceOf(AppError);
     expect(error).toMatchObject({
       code: ErrorCode.INVALID_STATE_TRANSITION,
       details: { from: 'PROCESSING', to: 'CANCELLED' },
     });
-    const stored = await dataSource
-      .getRepository(Payment)
-      .findOneByOrFail({ id: payment.id });
-    expect(stored.status).toBe(PaymentStatus.PROCESSING);
+    expect(store.get('payments', payment.id)?.status).toBe(PaymentStatus.PROCESSING);
   });
 
   it('retries a lost race that is still valid and succeeds', async () => {
     const payment = await pendingPayment();
-    const spy = interleave(2, bumpVersion);
+    const writes = interleave(2, bumpVersion);
 
     const result = await service.transition(
       payment.id,
@@ -108,7 +106,7 @@ describe('PaymentService.transition under contention', () => {
       'client',
     );
 
-    expect(spy).toHaveBeenCalledTimes(3);
+    expect(writes).toHaveBeenCalledTimes(3);
     expect(result).toMatchObject({ status: PaymentStatus.CANCELLED, version: 4 });
   });
 
@@ -123,7 +121,7 @@ describe('PaymentService.transition under contention', () => {
 
   it('does not retry when the caller pinned a version with If-Match', async () => {
     const payment = await pendingPayment();
-    const spy = interleave(1, bumpVersion);
+    const writes = interleave(1, bumpVersion);
 
     await expect(
       service.transition(payment.id, PaymentStatus.CANCELLED, 'client', {
@@ -133,7 +131,7 @@ describe('PaymentService.transition under contention', () => {
       code: ErrorCode.PRECONDITION_FAILED,
       details: { expectedVersion: 1, currentVersion: 2 },
     });
-    expect(spy).toHaveBeenCalledTimes(1);
+    expect(writes).toHaveBeenCalledTimes(1);
   });
 
   it('applies system transitions with extra changes and stamps processedAt', async () => {

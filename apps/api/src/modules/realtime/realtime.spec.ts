@@ -19,9 +19,9 @@ describe('RealtimeHub', () => {
     const forA = jest.fn();
     const forB = jest.fn();
     const all = jest.fn();
-    hub.subscribe({ paymentId: 'a', onMessage: forA, onResync: jest.fn() });
-    hub.subscribe({ paymentId: 'b', onMessage: forB, onResync: jest.fn() });
-    hub.subscribe({ onMessage: all, onResync: jest.fn() });
+    hub.subscribe({ paymentId: 'a', onMessage: forA });
+    hub.subscribe({ paymentId: 'b', onMessage: forB });
+    hub.subscribe({ onMessage: all });
 
     hub.publish(message('a'));
     expect(forA).toHaveBeenCalledTimes(1);
@@ -32,7 +32,7 @@ describe('RealtimeHub', () => {
   it('stops delivering after unsubscribe', () => {
     const hub = new RealtimeHub(captureLogger().logger);
     const onMessage = jest.fn();
-    const unsubscribe = hub.subscribe({ onMessage, onResync: jest.fn() });
+    const unsubscribe = hub.subscribe({ onMessage });
     unsubscribe();
     hub.publish(message('a'));
     expect(onMessage).not.toHaveBeenCalled();
@@ -47,24 +47,12 @@ describe('RealtimeHub', () => {
       onMessage: () => {
         throw new Error('broken socket');
       },
-      onResync: jest.fn(),
     });
-    hub.subscribe({ onMessage: healthy, onResync: jest.fn() });
+    hub.subscribe({ onMessage: healthy });
 
     hub.publish(message('a'));
     expect(healthy).toHaveBeenCalledTimes(1);
     expect(lines().some((l) => l.msg === 'realtime subscriber threw')).toBe(true);
-  });
-
-  it('broadcasts resync to everyone', () => {
-    const hub = new RealtimeHub(captureLogger().logger);
-    const a = jest.fn();
-    const b = jest.fn();
-    hub.subscribe({ paymentId: 'x', onMessage: jest.fn(), onResync: a });
-    hub.subscribe({ onMessage: jest.fn(), onResync: b });
-    hub.resync();
-    expect(a).toHaveBeenCalledTimes(1);
-    expect(b).toHaveBeenCalledTimes(1);
   });
 });
 

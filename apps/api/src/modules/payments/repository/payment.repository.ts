@@ -1,10 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import type { Currency } from '@payment-sim/shared';
 import { PaymentStatus } from '@payment-sim/shared';
-import type { EntityManager } from 'typeorm';
-import { In } from 'typeorm';
+import type { PaymentStore, StoreTx } from '../../../infra/store/payment-store';
 import type { KeysetCursor } from '../../../libs/common/http/cursor';
 import { BaseRepository } from '../../../libs/core/base/base.repository';
+import type { PaymentData, PaymentMethod } from '../entity/payment.entity';
 import { Payment } from '../entity/payment.entity';
+
+export interface NewPayment {
+  amount: number;
+  currency: Currency;
+  customerEmail: string;
+  description: string | null;
+  paymentMethod: PaymentMethod;
+}
 
 export interface PageQuery {
   limit: number;
@@ -27,49 +36,89 @@ export interface PaymentAggregates {
   processingTimeMs: { p50: number | null; p95: number | null };
 }
 
-export class PaymentRepository extends BaseRepository<Payment> {
-  constructor(manager: EntityManager) {
-    super(manager.getRepository(Payment));
+/** Newest first; id breaks ties between payments created in the same millisecond. */
+function newestFirst(a: PaymentData, b: PaymentData): number {
+  return (
+    b.createdAt.getTime() - a.createdAt.getTime() ||
+    (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
+  );
+}
+
+/** Linear interpolation between closest ranks: the same definition as SQL's percentile_cont. */
+export function percentile(sorted: readonly number[], p: number): number | null {
+  if (sorted.length === 0) return null;
+  const position = p * (sorted.length - 1);
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  const low = sorted[lower] as number;
+  const high = sorted[upper] as number;
+  return low + (high - low) * (position - lower);
+}
+
+export class PaymentRepository extends BaseRepository<'payments'> {
+  constructor(store: PaymentStore, tx?: StoreTx) {
+    super(store, 'payments', tx);
+  }
+
+  async insert(data: NewPayment): Promise<Payment> {
+    const now = this.now();
+    const payment = Payment.from({
+      ...data,
+      id: randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+      version: 1,
+      status: PaymentStatus.PENDING,
+      failureCode: null,
+      failureMessage: null,
+      attempts: 0,
+      processedAt: null,
+    });
+    await this.write((tx) => tx.put('payments', payment));
+    return payment;
+  }
+
+  findById(id: string): Promise<Payment | null> {
+    const data = this.reader.get('payments', id);
+    return Promise.resolve(data ? Payment.from(data) : null);
   }
 
   findByIds(ids: string[]): Promise<Payment[]> {
-    return ids.length ? this.repository.findBy({ id: In(ids) }) : Promise.resolve([]);
+    const wanted = new Set(ids);
+    return Promise.resolve(
+      this.reader.find('payments', (p) => wanted.has(p.id)).map((p) => Payment.from(p)),
+    );
   }
 
   /**
-   * Optimistic write: persist the payment's mutable fields only if the row is still at the
-   * version the caller read. TypeORM's update builder bumps `version` and `updated_at` itself.
-   * Returns the fresh row, or null when another writer got there first.
+   * Optimistic write: persist the payment's mutable fields only if it is still at the version
+   * the caller read. Returns the fresh payment, or null when another writer got there first.
    */
-  async updateIfVersion(
-    payment: Payment,
-    expectedVersion: number,
-  ): Promise<Payment | null> {
-    const result = await this.repository
-      .createQueryBuilder()
-      .update()
-      .set({
+  updateIfVersion(payment: Payment, expectedVersion: number): Promise<Payment | null> {
+    return this.write((tx) => {
+      const current = tx.get('payments', payment.id);
+      if (!current || current.version !== expectedVersion) return null;
+      const updated: PaymentData = {
+        ...current,
         status: payment.status,
         processedAt: payment.processedAt,
         failureCode: payment.failureCode,
         failureMessage: payment.failureMessage,
         attempts: payment.attempts,
-      })
-      .where('id = :id AND version = :version', {
-        id: payment.id,
-        version: expectedVersion,
-      })
-      .execute();
-
-    return result.affected ? this.findById(payment.id) : null;
+        version: current.version + 1,
+        updatedAt: this.now(),
+      };
+      tx.put('payments', updated);
+      return Payment.from(updated);
+    });
   }
 
   /**
-   * Newest first, keyset-paginated: `(created_at, id) < cursor` walks the
-   * (created_at, id) / (status, created_at, id) indexes directly, so page N costs the same as
-   * page 1 and rows inserted meanwhile never shift what the reader sees.
+   * Keyset pagination: everything strictly after the cursor's (createdAt, id) in newest-first
+   * order. Rows inserted meanwhile never shift what the reader sees. This scans and sorts in
+   * memory, which is fine at a JSON file's scale; see the README for what would change.
    */
-  async listPage({
+  listPage({
     limit,
     after,
     status,
@@ -77,73 +126,58 @@ export class PaymentRepository extends BaseRepository<Payment> {
     from,
     to,
   }: PageQuery): Promise<PaymentPage> {
-    const qb = this.repository
-      .createQueryBuilder('p')
-      .addSelect(
-        `to_char(p.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
-        'cursor_created_at',
-      )
-      .orderBy('p.createdAt', 'DESC')
-      .addOrderBy('p.id', 'DESC')
-      .limit(limit + 1);
+    const fromTime = from ? new Date(from).getTime() : undefined;
+    const toTime = to ? new Date(to).getTime() : undefined;
+    const afterTime = after ? new Date(after.createdAt).getTime() : undefined;
 
-    if (status) qb.andWhere('p.status = :status', { status });
-    if (currency) qb.andWhere('p.currency = :currency', { currency });
-    if (from) qb.andWhere('p.created_at >= :from', { from });
-    if (to) qb.andWhere('p.created_at < :to', { to });
-    if (after) {
-      qb.andWhere(
-        '(p.created_at, p.id) < (CAST(:afterCreatedAt AS timestamptz), CAST(:afterId AS uuid))',
-        { afterCreatedAt: after.createdAt, afterId: after.id },
-      );
-    }
+    const matches = this.reader
+      .find('payments', (p) => {
+        const created = p.createdAt.getTime();
+        return (
+          (!status || p.status === status) &&
+          (!currency || p.currency === currency) &&
+          (fromTime === undefined || created >= fromTime) &&
+          (toTime === undefined || created < toTime) &&
+          (afterTime === undefined ||
+            created < afterTime ||
+            (created === afterTime && p.id < (after as KeysetCursor).id))
+        );
+      })
+      .sort(newestFirst);
 
-    const { entities, raw } = await qb.getRawAndEntities<{ cursor_created_at: string }>();
-    const items = entities.slice(0, limit);
+    const items = matches.slice(0, limit).map((p) => Payment.from(p));
     const last = items.at(-1);
-    const hasMore = entities.length > limit;
-    return {
+    return Promise.resolve({
       items,
       next:
-        hasMore && last
-          ? { createdAt: raw[items.length - 1]?.cursor_created_at ?? '', id: last.id }
+        matches.length > limit && last
+          ? { createdAt: last.createdAt.toISOString(), id: last.id }
           : null,
-    };
+    });
   }
 
-  /** Whole-table aggregates: fine at demo scale; see README for how this would scale. */
-  async aggregates(): Promise<PaymentAggregates> {
-    const [counts, volume, timing] = await Promise.all([
-      this.repository
-        .createQueryBuilder('p')
-        .select('p.status', 'status')
-        .addSelect('COUNT(*)::int', 'count')
-        .groupBy('p.status')
-        .getRawMany<{ status: PaymentStatus; count: number }>(),
-      this.repository
-        .createQueryBuilder('p')
-        .select('p.currency', 'currency')
-        .addSelect('SUM(p.amount)', 'total')
-        .where('p.status = :status', { status: PaymentStatus.SUCCEEDED })
-        .groupBy('p.currency')
-        .getRawMany<{ currency: Currency; total: string }>(),
-      this.manager.query<Array<{ p50: number | null; p95: number | null }>>(
-        `SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY ms) AS p50,
-                percentile_cont(0.95) WITHIN GROUP (ORDER BY ms) AS p95
-         FROM (SELECT EXTRACT(EPOCH FROM (processed_at - created_at)) * 1000 AS ms
-               FROM payments WHERE processed_at IS NOT NULL) AS t`,
-      ),
-    ]);
+  aggregates(): Promise<PaymentAggregates> {
+    const counts = new Map<PaymentStatus, number>();
+    const volume = new Map<Currency, number>();
+    const durations: number[] = [];
 
-    const round = (v: number | null | undefined) =>
-      v == null ? null : Math.round(Number(v));
-    return {
-      countsByStatus: counts,
-      succeededVolume: volume.map((v) => ({
-        currency: v.currency,
-        total: Number(v.total),
-      })),
-      processingTimeMs: { p50: round(timing[0]?.p50), p95: round(timing[0]?.p95) },
-    };
+    for (const p of this.reader.find('payments')) {
+      counts.set(p.status, (counts.get(p.status) ?? 0) + 1);
+      if (p.status === PaymentStatus.SUCCEEDED) {
+        volume.set(p.currency, (volume.get(p.currency) ?? 0) + p.amount);
+      }
+      if (p.processedAt) durations.push(p.processedAt.getTime() - p.createdAt.getTime());
+    }
+    durations.sort((a, b) => a - b);
+
+    const round = (v: number | null) => (v === null ? null : Math.round(v));
+    return Promise.resolve({
+      countsByStatus: [...counts].map(([status, count]) => ({ status, count })),
+      succeededVolume: [...volume].map(([currency, total]) => ({ currency, total })),
+      processingTimeMs: {
+        p50: round(percentile(durations, 0.5)),
+        p95: round(percentile(durations, 0.95)),
+      },
+    });
   }
 }

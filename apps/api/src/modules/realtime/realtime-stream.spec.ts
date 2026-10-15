@@ -1,22 +1,18 @@
+import { mkdtemp, rm } from 'node:fs/promises';
 import type { Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { PaymentStreamMessage, PaymentView } from '@payment-sim/shared';
 import { PaymentEventType, PaymentStatus } from '@payment-sim/shared';
 import type { Express } from 'express';
 import request from 'supertest';
-import type { DataSource } from 'typeorm';
 import type { Container } from '../../container';
-import {
-  closeIntegrationApps,
-  createIntegrationApp,
-  createTestDataSource,
-  truncateAll,
-} from '../../test/database';
+import type { PaymentStore } from '../../infra/store/payment-store';
+import { AtomicFileWriter } from '../../libs/core/store/json-file';
+import { closeTestApps, createTestApp, createTestStore } from '../../test/app';
 import type { SseConnection, SseEvent } from '../../test/sse-client';
 import { listen, openSse, stopServer } from '../../test/sse-client';
-import { Payment } from '../payments/entity/payment.entity';
-import { LISTENER_APPLICATION_NAME } from './pg-listener';
-import { PgNotifyPublisher } from './payment-event.publisher';
 
 const FAST = {
   GATEWAY_MIN_LATENCY_MS: '0',
@@ -32,19 +28,18 @@ interface Instance {
   server: Server;
 }
 
-describe('realtime (LISTEN/NOTIFY + SSE)', () => {
-  let dataSource: DataSource;
+describe('live updates (SSE)', () => {
+  let store: PaymentStore;
   let a: Instance;
   const servers: Server[] = [];
   const connections: SseConnection[] = [];
   let keySeq = 0;
 
-  async function instance(env: Record<string, string> = {}): Promise<Instance> {
-    const { app, container } = await createIntegrationApp(
-      dataSource,
-      {},
-      { ...FAST, ...env },
-    );
+  async function instance(
+    env: Record<string, string> = {},
+    on: PaymentStore = store,
+  ): Promise<Instance> {
+    const { app, container } = await createTestApp(on, {}, { ...FAST, ...env });
     const { baseUrl, server } = await listen(app);
     servers.push(server);
     return { app, container, baseUrl, server };
@@ -56,11 +51,8 @@ describe('realtime (LISTEN/NOTIFY + SSE)', () => {
     return connection;
   }
 
-  async function createPayment(
-    on: Instance = a,
-    card = '4242424242424242',
-  ): Promise<string> {
-    const res = await request(on.app)
+  const paymentRequest = (on: Instance, card = '4242424242424242') =>
+    request(on.app)
       .post('/api/v1/payments')
       .set('Idempotency-Key', `rt-${Date.now()}-${++keySeq}`)
       .send({
@@ -69,6 +61,9 @@ describe('realtime (LISTEN/NOTIFY + SSE)', () => {
         customerEmail: 'ada@example.com',
         card: { number: card, expMonth: 12, expYear: 2030, cvc: '123' },
       });
+
+  async function createPayment(on: Instance = a, card?: string): Promise<string> {
+    const res = await paymentRequest(on, card);
     expect(res.status).toBe(202);
     return res.body.data.id as string;
   }
@@ -87,21 +82,15 @@ describe('realtime (LISTEN/NOTIFY + SSE)', () => {
   const isStatus = (status: PaymentStatus) => (e: SseEvent) =>
     named(PaymentEventType.STATUS_CHANGED)(e) && message(e).payment.status === status;
 
-  beforeAll(async () => {
-    dataSource = await createTestDataSource();
+  beforeEach(async () => {
+    store = await createTestStore();
     a = await instance();
   });
 
-  beforeEach(() => truncateAll(dataSource));
-
-  afterEach(() => {
+  afterEach(async () => {
     connections.splice(0).forEach((c) => c.close());
-  });
-
-  afterAll(async () => {
-    await Promise.all(servers.map(stopServer));
-    await closeIntegrationApps();
-    await dataSource.destroy();
+    await Promise.all(servers.splice(0).map(stopServer));
+    await closeTestApps();
   });
 
   describe('GET /payments/:id/stream', () => {
@@ -200,22 +189,20 @@ describe('realtime (LISTEN/NOTIFY + SSE)', () => {
     it('never emits events from a rolled-back transaction', async () => {
       const id = await createPayment();
       const sse = await stream(`${a.baseUrl}/api/v1/stream`);
-      const publisher = new PgNotifyPublisher();
-      const payment = await dataSource.getRepository(Payment).findOneByOrFail({ id });
       const fake = (sequence: number): PaymentStreamMessage => ({
         type: PaymentEventType.STATUS_CHANGED,
-        payment: { id: payment.id } as PaymentView,
+        payment: { id } as PaymentView,
         event: { sequence } as PaymentStreamMessage['event'],
       });
 
-      await dataSource
-        .transaction(async (manager) => {
-          await publisher.paymentEvent(manager, fake(999_001));
+      await store
+        .transaction((tx) => {
+          a.container.publisher.paymentEvent(tx, fake(999_001));
           throw new Error('roll back');
         })
         .catch(() => undefined);
-      await dataSource.transaction((manager) =>
-        publisher.paymentEvent(manager, fake(999_002)),
+      await store.transaction((tx) =>
+        a.container.publisher.paymentEvent(tx, fake(999_002)),
       );
 
       const delivered = await sse.next();
@@ -223,53 +210,53 @@ describe('realtime (LISTEN/NOTIFY + SSE)', () => {
       expect(sse.events.some((e) => Number(e.id) === 999_001)).toBe(false);
     });
 
-    it('fans out across instances: an event committed on A reaches a stream on B', async () => {
-      const b = await instance();
-      const id = await createPayment(a);
-      const sse = await stream(`${b.baseUrl}/api/v1/payments/${id}/stream`);
-      await sse.next(); // snapshot
-      await process(a);
-      expect(message(await sse.next(isStatus(PaymentStatus.SUCCEEDED))).payment.id).toBe(
-        id,
-      );
-    });
-
-    it("wakes another instance's worker immediately when a job is enqueued", async () => {
-      const b = await instance({ WORKER_POLL_INTERVAL_MS: '60000' });
-      b.container.worker.start();
+    it('publishes only once the change is on disk', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'sse-durable-'));
+      const file = join(dir, 'payments.json');
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const real = new AtomicFileWriter(file);
+      const durable = await createTestStore({
+        file,
+        writer: {
+          write: async (contents) => {
+            await gate;
+            await real.write(contents);
+          },
+        },
+      });
       try {
-        const id = await createPayment(a); // a's worker is not running
-        for (let i = 0; i < 100; i++) {
-          const { status } = await dataSource
-            .getRepository(Payment)
-            .findOneByOrFail({ id });
-          if (status === PaymentStatus.SUCCEEDED) break;
-          await sleep(20);
-        }
-        expect(
-          (await dataSource.getRepository(Payment).findOneByOrFail({ id })).status,
-        ).toBe(PaymentStatus.SUCCEEDED);
+        const slowDisk = await instance({}, durable);
+        const sse = await stream(`${slowDisk.baseUrl}/api/v1/stream`);
+        const pending = paymentRequest(slowDisk).then((res) => res);
+
+        await sleep(50);
+        expect(sse.events).toEqual([]); // committed in memory, not yet durable: not announced
+
+        release();
+        expect((await pending).status).toBe(202);
+        expect((await sse.next()).event).toBe(PaymentEventType.CREATED);
       } finally {
-        await b.container.worker.stop();
+        release();
+        await closeTestApps();
+        await durable.close();
+        await rm(dir, { recursive: true, force: true });
       }
     });
 
-    it('reconnects a dropped listener and tells clients to resync', async () => {
-      const sse = await stream(`${a.baseUrl}/api/v1/stream`);
-      await dataSource.query(
-        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-         WHERE application_name = $1 AND pid <> pg_backend_pid()`,
-        [LISTENER_APPLICATION_NAME],
-      );
-
-      const resync = await sse.next((e) => e.event === 'resync', 5_000);
-      expect(resync.data).toMatchObject({ reason: expect.any(String) as unknown });
-      expect(a.container.listener.connected).toBe(true);
-
-      const id = await createPayment();
-      expect(message(await sse.next(named(PaymentEventType.CREATED))).payment.id).toBe(
-        id,
-      );
+    it('wakes the worker as soon as a job is committed, without waiting for a poll', async () => {
+      const live = await instance({ WORKER_POLL_INTERVAL_MS: '60000' });
+      await live.container.worker.start();
+      try {
+        const id = await createPayment(live);
+        for (let i = 0; i < 100; i++) {
+          if (store.get('payments', id)?.status === PaymentStatus.SUCCEEDED) break;
+          await sleep(20);
+        }
+        expect(store.get('payments', id)?.status).toBe(PaymentStatus.SUCCEEDED);
+      } finally {
+        await live.container.worker.stop();
+      }
     });
   });
 
@@ -297,15 +284,6 @@ describe('realtime (LISTEN/NOTIFY + SSE)', () => {
       c.container.closeStreams();
       await sse.ended;
       expect(c.container.streams.size).toBe(0);
-    });
-
-    it('reports the listener on /ready without letting it gate readiness', async () => {
-      const res = await request(a.app).get('/ready');
-      expect(res.status).toBe(200);
-      expect(res.body.data.checks.realtime).toMatchObject({
-        status: 'up',
-        critical: false,
-      });
     });
   });
 });

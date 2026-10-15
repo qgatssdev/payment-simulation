@@ -4,6 +4,7 @@ import request from 'supertest';
 import { endpoint } from './libs/common/http/endpoint';
 import { BaseResponse } from './libs/core/base/base.response';
 import { ConflictError } from './libs/core/errors';
+import { StorageUnavailableError } from './libs/core/store/store.errors';
 import { requestContext } from './libs/core/logger/request-context';
 import { buildTestApp, captureLogger } from './test/helpers';
 
@@ -54,7 +55,7 @@ function appWithRoutes(options: Parameters<typeof buildTestApp>[0] = {}) {
       });
       router.get('/async-boom', async () => {
         await Promise.resolve();
-        throw Object.assign(new Error('connection terminated'), { code: '08006' });
+        throw new StorageUnavailableError({ cause: new Error('ENOSPC: no space left') });
       });
       router.get('/ok', (_req, res) => {
         res.json(BaseResponse.success({ ok: true }));
@@ -205,7 +206,7 @@ describe('error handling', () => {
     expect(JSON.stringify(failure)).toContain('hunter2');
   });
 
-  it('maps transient database failures from async handlers to 503 with Retry-After', async () => {
+  it('turns storage failures in async handlers into 503 with Retry-After', async () => {
     const res = await request(appWithRoutes()).get('/api/v1/async-boom');
     expect(res.status).toBe(503);
     expect(res.headers['retry-after']).toBe('1');

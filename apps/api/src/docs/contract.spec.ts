@@ -1,13 +1,12 @@
 import { PaymentStatus } from '@payment-sim/shared';
 import type { Express } from 'express';
 import request from 'supertest';
-import type { DataSource } from 'typeorm';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Container } from '../container';
-import {
-  closeIntegrationApps,
-  createIntegrationApp,
-  createTestDataSource,
-} from '../test/database';
+import type { PaymentStore } from '../infra/store/payment-store';
+import { closeTestApps, createTestApp, createTestStore } from '../test/app';
 import { API_VERSION, buildOpenApiDocument } from './openapi';
 import { OpenApiValidator } from '../test/openapi-validator';
 
@@ -22,7 +21,7 @@ describe('API contract', () => {
   const validator = new OpenApiValidator(document);
   const exercised = new Set<string>();
 
-  let dataSource: DataSource;
+  let store: PaymentStore;
   let app: Express;
   let container: Container;
   let keySeq = 0;
@@ -33,10 +32,9 @@ describe('API contract', () => {
     'POST /api/v1/payments 413': 'body limit; covered in app.spec.ts',
     'POST /api/v1/payments 429': 'rate limiting; covered in app.spec.ts',
     'GET /api/v1/payments 429': 'rate limiting; covered in app.spec.ts',
-    'POST /api/v1/payments 503': 'database outage; mapping covered in app.spec.ts',
-    'GET /api/v1/payments/{id}/stream 503': 'stream cap; covered in realtime.int-spec.ts',
-    'GET /api/v1/stream 503': 'stream cap; covered in realtime.int-spec.ts',
-    'GET /ready 503': 'database outage; covered in readiness.int-spec.ts',
+    'GET /api/v1/payments/{id}/stream 503':
+      'stream cap; covered in realtime-stream.spec.ts',
+    'GET /api/v1/stream 503': 'stream cap; covered in realtime-stream.spec.ts',
   };
 
   async function conforms(
@@ -81,9 +79,9 @@ describe('API contract', () => {
   }
 
   beforeAll(async () => {
-    dataSource = await createTestDataSource();
-    ({ app, container } = await createIntegrationApp(
-      dataSource,
+    store = await createTestStore();
+    ({ app, container } = await createTestApp(
+      store,
       {},
       {
         GATEWAY_MIN_LATENCY_MS: '0',
@@ -94,10 +92,7 @@ describe('API contract', () => {
     ));
   });
 
-  afterAll(async () => {
-    await closeIntegrationApps();
-    await dataSource.destroy();
-  });
+  afterAll(() => closeTestApps());
 
   it('payments: create, replay, read, list, timeline, change status', async () => {
     const idempotencyKey = key();
@@ -180,6 +175,46 @@ describe('API contract', () => {
     await conforms(request(app).get('/api/v1/stats'), 'GET', '/api/v1/stats');
     await conforms(request(app).get('/health'), 'GET', '/health');
     await conforms(request(app).get('/ready'), 'GET', '/ready');
+  });
+
+  it('storage outage: 503 on writes and on readiness, recovering once the disk does', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'contract-'));
+    let failing = true;
+    const broken = await createTestStore({
+      file: join(dir, 'payments.json'),
+      writer: {
+        write: () =>
+          failing
+            ? Promise.reject(new Error('EROFS: read-only file system'))
+            : Promise.resolve(),
+      },
+    });
+    try {
+      const { app: degraded } = await createTestApp(broken);
+      const res = await conforms(
+        request(degraded)
+          .post('/api/v1/payments')
+          .set('Idempotency-Key', key())
+          .send(newPayment()),
+        'POST',
+        '/api/v1/payments',
+      );
+      expect(res.status).toBe(503);
+      expect(res.headers['retry-after']).toBe('1');
+
+      const notReady = await conforms(request(degraded).get('/ready'), 'GET', '/ready');
+      expect(notReady.status).toBe(503);
+      expect(notReady.body.data.checks.storage).toMatchObject({
+        status: 'down',
+        critical: true,
+      });
+
+      failing = false;
+      expect((await request(degraded).get('/ready')).status).toBe(200);
+    } finally {
+      await broken.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('streams: JSON errors before the stream starts', async () => {

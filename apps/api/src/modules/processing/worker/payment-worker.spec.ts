@@ -1,20 +1,22 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { PaymentEventType, PaymentStatus, TEST_CARDS } from '@payment-sim/shared';
 import type { Express } from 'express';
 import request from 'supertest';
-import type { DataSource } from 'typeorm';
 import type { Container } from '../../../container';
 import type { MockPaymentGateway } from '../../../infra/gateway/mock-payment-gateway';
+import type { PaymentStore } from '../../../infra/store/payment-store';
 import {
-  closeIntegrationApps,
-  createIntegrationApp,
-  createTestDataSource,
-  truncateAll,
-} from '../../../test/database';
-import { PaymentEvent } from '../../payments/entity/payment-event.entity';
-import { Payment } from '../../payments/entity/payment.entity';
+  closeTestApps,
+  createTestApp,
+  createTestStore,
+  patchRecord,
+} from '../../../test/app';
 import { PaymentService } from '../../payments/services/payment.service';
-import { Job, JobStatus } from '../entity/job.entity';
+import type { Job } from '../entity/job.entity';
+import { JobStatus } from '../entity/job.entity';
 import { JobRepository } from '../repository/job.repository';
 import type { PaymentWorker } from './payment-worker';
 
@@ -39,26 +41,25 @@ const FAST_ENV = {
 };
 
 describe('payment worker', () => {
-  let dataSource: DataSource;
+  let store: PaymentStore;
   let app: Express;
   let container: Container;
   let worker: PaymentWorker;
   let keySeq = 0;
 
-  const build = (env: Record<string, string> = {}) =>
-    createIntegrationApp(dataSource, { random: () => 0.5 }, { ...FAST_ENV, ...env });
+  /** Another app on the same store: like a second worker sharing the data file. */
+  const build = (env: Record<string, string> = {}, on: PaymentStore = store) =>
+    createTestApp(on, { random: () => 0.5 }, { ...FAST_ENV, ...env });
 
-  beforeAll(async () => {
-    dataSource = await createTestDataSource();
+  beforeEach(async () => {
+    store = await createTestStore();
     ({ app, container } = await build());
     worker = container.worker;
   });
 
-  beforeEach(() => truncateAll(dataSource));
-  afterEach(() => jest.restoreAllMocks());
-  afterAll(async () => {
-    await closeIntegrationApps();
-    await dataSource.destroy();
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await closeTestApps();
   });
 
   async function createPayment(
@@ -90,19 +91,27 @@ describe('payment worker', () => {
     throw new Error('workers did not go idle');
   }
 
-  const paymentOf = (id: string) =>
-    dataSource.getRepository(Payment).findOneByOrFail({ id });
-  const jobOf = (paymentId: string) =>
-    dataSource.getRepository(Job).findOneByOrFail({ paymentId });
-  const timeline = async (paymentId: string) =>
-    (
-      await dataSource
-        .getRepository(PaymentEvent)
-        .find({ where: { paymentId }, order: { sequence: 'ASC' } })
-    ).map((e) =>
-      e.type === PaymentEventType.ATTEMPT_FAILED
-        ? `attempt_failed#${String(e.metadata.attempt)}`
-        : `${e.toStatus}`,
+  const paymentOf = (id: string, on: PaymentStore = store) => {
+    const payment = on.get('payments', id);
+    if (!payment) throw new Error(`no payment ${id}`);
+    return Promise.resolve(payment);
+  };
+  const jobOf = (paymentId: string) => {
+    const [job] = store.find('jobs', (j) => j.paymentId === paymentId);
+    if (!job) throw new Error(`no job for ${paymentId}`);
+    return Promise.resolve(job);
+  };
+  const eventsOf = (paymentId: string) =>
+    store
+      .find('paymentEvents', (e) => e.paymentId === paymentId)
+      .sort((a, b) => a.sequence - b.sequence);
+  const timeline = (paymentId: string) =>
+    Promise.resolve(
+      eventsOf(paymentId).map((e) =>
+        e.type === PaymentEventType.ATTEMPT_FAILED
+          ? `attempt_failed#${String(e.metadata.attempt)}`
+          : `${e.toStatus}`,
+      ),
     );
 
   describe('outcomes per test card', () => {
@@ -123,10 +132,8 @@ describe('payment worker', () => {
         lockedBy: null,
       });
 
-      const succeeded = await dataSource
-        .getRepository(PaymentEvent)
-        .findOneByOrFail({ paymentId: id, toStatus: PaymentStatus.SUCCEEDED });
-      expect(succeeded.metadata).toMatchObject({
+      const succeeded = eventsOf(id).find((e) => e.toStatus === PaymentStatus.SUCCEEDED);
+      expect(succeeded?.metadata).toMatchObject({
         actor: 'system',
         attempt: 1,
         authorizationCode: expect.stringMatching(/^AUTH/) as unknown,
@@ -192,10 +199,10 @@ describe('payment worker', () => {
 
     it('fails cleanly for a card token the gateway does not recognise', async () => {
       const id = await createPayment(CARD.Success as string);
-      await dataSource.query(
-        `UPDATE payments SET card_token = 'tok_unavailable' WHERE id = $1`,
-        [id],
-      );
+      const { paymentMethod } = await paymentOf(id);
+      await patchRecord(store, 'payments', id, {
+        paymentMethod: { ...paymentMethod, token: 'tok_unavailable' },
+      });
       await runUntilIdle();
       expect(await paymentOf(id)).toMatchObject({
         status: PaymentStatus.FAILED,
@@ -226,10 +233,12 @@ describe('payment worker', () => {
     );
     await runUntilIdle(worker, other.container.worker);
 
-    const succeededEvents = await dataSource.getRepository(PaymentEvent).countBy({
-      type: PaymentEventType.STATUS_CHANGED,
-      toStatus: PaymentStatus.SUCCEEDED,
-    });
+    const succeededEvents = store.find(
+      'paymentEvents',
+      (e) =>
+        e.type === PaymentEventType.STATUS_CHANGED &&
+        e.toStatus === PaymentStatus.SUCCEEDED,
+    ).length;
     expect(succeededEvents).toBe(16);
     // Each container has its own simulated gateway; together they approved each payment once.
     expect(
@@ -287,13 +296,12 @@ describe('payment worker', () => {
 
   it('re-queues jobs held by a dead worker and ignores that worker if it wakes up', async () => {
     const id = await createPayment(CARD.Success as string);
-    const jobs = new JobRepository(dataSource.manager);
+    const jobs = new JobRepository(store);
     const [orphaned] = await jobs.claimDue(1, 'zombie-worker', new Date());
     expect(orphaned?.paymentId).toBe(id);
-    await dataSource.query(
-      `UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = $1`,
-      [orphaned?.id],
-    );
+    await patchRecord(store, 'jobs', orphaned!.id, {
+      lockedAt: new Date(Date.now() - 10 * 60_000),
+    });
 
     expect(await worker.reclaimStaleJobs()).toEqual([orphaned?.id]);
     await runUntilIdle();
@@ -305,11 +313,51 @@ describe('payment worker', () => {
     expect(await jobOf(id)).toMatchObject({ status: JobStatus.COMPLETED, attempts: 2 });
   });
 
+  it('after a crash, resumes the jobs the dead process left running', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'worker-restart-'));
+    const file = join(dir, 'payments.json');
+    try {
+      // Process 1 accepts a payment and claims its job, then dies before settling it.
+      const before = await createTestStore({ file });
+      const { app: firstApp } = await build({}, before);
+      const id = await createPayment(CARD.Success as string, firstApp);
+      await new JobRepository(before).claimDue(1, 'process-that-crashed', new Date());
+      await closeTestApps();
+      await before.close();
+
+      // Process 2 opens the same file; starting its worker re-queues and finishes the job.
+      const after = await createTestStore({ file });
+      const { container: restarted } = await build({}, after);
+      await restarted.worker.start();
+      try {
+        for (
+          let i = 0;
+          i < 100 && (await paymentOf(id, after)).status !== PaymentStatus.SUCCEEDED;
+          i++
+        ) {
+          await sleep(20);
+        }
+        expect(await paymentOf(id, after)).toMatchObject({
+          status: PaymentStatus.SUCCEEDED,
+        });
+        // The job is settled in the transaction after the payment's; draining waits for it.
+        await restarted.worker.stop();
+        const [job] = after.find('jobs', (j) => j.paymentId === id);
+        expect(job).toMatchObject({ status: JobStatus.COMPLETED, attempts: 2 });
+      } finally {
+        await restarted.worker.stop();
+        await after.close();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('runs on its own once started: picks up new payments immediately and stops cleanly', async () => {
     const { app: liveApp, container: live } = await build({
       WORKER_POLL_INTERVAL_MS: '60000',
     });
-    live.worker.start();
+    await live.worker.start();
     try {
       const id = await createPayment(CARD.Success as string, liveApp);
       // A 60s poll interval: only the enqueue notification can make this fast.

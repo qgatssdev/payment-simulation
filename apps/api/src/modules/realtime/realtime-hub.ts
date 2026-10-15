@@ -5,11 +5,12 @@ export interface Subscriber {
   /** Only messages for this payment; omit for every payment. */
   paymentId?: string;
   onMessage(message: PaymentStreamMessage): void;
-  /** Delivery had a gap (the database listener reconnected): the subscriber should refetch. */
-  onResync(): void;
 }
 
-/** In-process fan-out from the one database listener to many SSE connections. */
+/**
+ * In-process fan-out of committed payment events to SSE connections. Delivery cannot have
+ * gaps: the store publishes after every commit, in the same process that serves the streams.
+ */
 export class RealtimeHub {
   private readonly subscribers = new Set<Subscriber>();
 
@@ -29,10 +30,6 @@ export class RealtimeHub {
       if (subscriber.paymentId && subscriber.paymentId !== message.payment.id) continue;
       this.deliver(() => subscriber.onMessage(message));
     }
-  }
-
-  resync(): void {
-    for (const subscriber of this.subscribers) this.deliver(() => subscriber.onResync());
   }
 
   /** One misbehaving subscriber must not stop delivery to the others. */

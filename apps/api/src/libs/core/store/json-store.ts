@@ -28,6 +28,8 @@ export interface JsonStoreOptions<C> {
   logger: Logger;
   /** Override how snapshots are written (tests inject failures). */
   writer?: SnapshotWriter;
+  /** Time source for record timestamps; injectable for deterministic tests. */
+  clock?: () => Date;
 }
 
 interface Snapshot {
@@ -84,6 +86,8 @@ export class JsonStore<C extends { [K in keyof C]: object }> {
   private lastFlushError: Error | undefined;
   private releaseLock: (() => Promise<void>) | undefined;
   private flushCount = 0;
+  /** The clock repositories use for createdAt/updatedAt. */
+  readonly now: () => Date;
 
   private constructor(private readonly options: JsonStoreOptions<C>) {
     for (const name of Object.keys(options.collections) as Array<keyof C>) {
@@ -92,6 +96,7 @@ export class JsonStore<C extends { [K in keyof C]: object }> {
     this.writer = options.file
       ? (options.writer ?? new AtomicFileWriter(options.file))
       : undefined;
+    this.now = options.clock ?? (() => new Date());
   }
 
   static async open<C extends { [K in keyof C]: object }>(

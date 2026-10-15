@@ -135,11 +135,6 @@ async function relay(
   const unsubscribe = deps.hub.subscribe({
     paymentId: options.paymentId,
     onMessage: (message) => (live ? forward(message) : buffered.push(message)),
-    onResync: () =>
-      stream.send({
-        event: 'resync',
-        data: { reason: 'Live updates were interrupted; refetch current state' },
-      }),
   });
   stream.onClose(unsubscribe);
 

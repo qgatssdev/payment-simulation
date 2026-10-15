@@ -1,6 +1,6 @@
 import type { Logger } from '../../../libs/core/logger/logger';
 
-/** A dependency the service cannot serve traffic without (e.g. the database). */
+/** A dependency the service cannot serve traffic without (e.g. writable storage). */
 export interface ReadinessCheck {
   readonly name: string;
   /**

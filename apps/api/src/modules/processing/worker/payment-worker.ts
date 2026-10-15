@@ -28,10 +28,10 @@ export interface PaymentWorkerDeps {
 }
 
 /**
- * Pulls due jobs from the Postgres queue and runs up to `concurrency` of them at once.
+ * Pulls due jobs from the persisted queue and runs up to `concurrency` of them at once.
  * Wakes on a poll interval or immediately on notify() (a payment was just enqueued, or a job
- * finished and freed a slot). Several workers — in this process or other instances — can run
- * against the same table; SKIP LOCKED and lock fencing keep each job with one owner.
+ * finished and freed a slot). Claims happen in serialized store transactions, so several
+ * workers sharing a store never take the same job, and settles are fenced on the claimer.
  */
 export class PaymentWorker {
   readonly workerId: string;
@@ -58,9 +58,22 @@ export class PaymentWorker {
     return this.inFlight.size;
   }
 
-  start(): void {
+  /**
+   * Begin processing. Jobs still marked running belong to a previous process that died
+   * mid-job (the data file's lock guarantees no other live process owns them), so they are
+   * re-queued first; fencing would discard any late result from their old owner anyway.
+   */
+  async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
+    const orphaned = await this.deps.jobs.reclaimStale(new Date(8.64e15));
+    if (orphaned.length > 0) {
+      this.deps.logger.warn(
+        { jobIds: orphaned },
+        'resuming jobs interrupted by a restart',
+      );
+    }
+    this.lastReclaimAt = Date.now();
     this.deps.logger.info(
       { workerId: this.workerId, concurrency: this.options.concurrency },
       'worker started',
@@ -173,7 +186,7 @@ export class PaymentWorker {
     );
   }
 
-  /** The processor threw something that is not a gateway answer: a bug, the database, ... */
+  /** The processor threw something that is not a gateway answer: a bug, storage, ... */
   private async handleCrash(job: Job, err: unknown): Promise<void> {
     this.deps.logger.error({ err }, 'job crashed');
     const message = err instanceof Error ? err.message : String(err);

@@ -1,30 +1,26 @@
 import { ErrorCode, PaymentStatus } from '@payment-sim/shared';
 import type { Express } from 'express';
 import request from 'supertest';
-import type { DataSource } from 'typeorm';
+import type { PaymentStore } from '../../infra/store/payment-store';
 import {
-  closeIntegrationApps,
-  createIntegrationApp,
-  createTestDataSource,
-  truncateAll,
-} from '../../test/database';
-import { Payment } from './entity/payment.entity';
+  closeTestApps,
+  createTestApp,
+  createTestStore,
+  patchRecord,
+} from '../../test/app';
+import type { Payment } from './entity/payment.entity';
+import { PaymentRepository } from './repository/payment.repository';
 
 describe('payment queries', () => {
-  let dataSource: DataSource;
+  let store: PaymentStore;
   let app: Express;
 
-  beforeAll(async () => {
-    dataSource = await createTestDataSource();
-    ({ app } = await createIntegrationApp(dataSource));
+  beforeEach(async () => {
+    store = await createTestStore();
+    ({ app } = await createTestApp(store));
   });
 
-  beforeEach(() => truncateAll(dataSource));
-
-  afterAll(async () => {
-    await closeIntegrationApps();
-    await dataSource.destroy();
-  });
+  afterEach(() => closeTestApps());
 
   /** Insert rows directly: these tests are about reading, not about the create path. */
   async function seed(
@@ -35,37 +31,30 @@ describe('payment queries', () => {
       }
     >,
   ): Promise<string[]> {
-    const repo = dataSource.getRepository(Payment);
+    const repo = new PaymentRepository(store);
     const ids: string[] = [];
     for (const { createdAt, processedAfterMs, ...row } of rows) {
-      const saved = await repo.save(
-        repo.create({
-          amount: 1000,
-          currency: 'USD',
-          customerEmail: 'ada@example.com',
-          paymentMethod: {
-            token: 'tok_sim_succeed_0123456789abcdef',
-            brand: 'visa',
-            last4: '4242',
-            expMonth: 12,
-            expYear: 2030,
-          } as Payment['paymentMethod'],
-          ...row,
-        }),
-      );
-      if (createdAt) {
-        await dataSource.query('UPDATE payments SET created_at = $2 WHERE id = $1', [
-          saved.id,
-          createdAt,
-        ]);
-      }
-      if (processedAfterMs !== undefined) {
-        await dataSource.query(
-          `UPDATE payments SET processed_at = created_at + make_interval(secs => $2::float / 1000)
-           WHERE id = $1`,
-          [saved.id, processedAfterMs],
-        );
-      }
+      const saved = await repo.insert({
+        amount: row.amount ?? 1000,
+        currency: row.currency ?? 'USD',
+        customerEmail: 'ada@example.com',
+        description: null,
+        paymentMethod: {
+          token: 'tok_sim_succeed_0123456789abcdef',
+          brand: 'visa',
+          last4: '4242',
+          expMonth: 12,
+          expYear: 2030,
+        } as Payment['paymentMethod'],
+      });
+      const created = createdAt ? new Date(createdAt) : saved.createdAt;
+      await patchRecord(store, 'payments', saved.id, {
+        ...row,
+        createdAt: created,
+        ...(processedAfterMs === undefined
+          ? {}
+          : { processedAt: new Date(created.getTime() + processedAfterMs) }),
+      });
       ids.push(saved.id);
     }
     return ids;
@@ -76,12 +65,12 @@ describe('payment queries', () => {
 
   describe('GET /payments', () => {
     it('walks every row exactly once, newest first, even with identical timestamps', async () => {
-      // 10 rows share one microsecond-precise timestamp: only the id tie-break orders them.
+      // 10 payments share one millisecond: only the id tie-break orders them.
       const tied = Array.from({ length: 10 }, () => ({
-        createdAt: '2026-10-01T09:00:00.123456Z',
+        createdAt: '2026-10-01T09:00:00.123Z',
       }));
       const spread = Array.from({ length: 15 }, (_, i) => ({
-        createdAt: `2026-10-0${1 + (i % 9)}T10:00:00.${String(100000 + i)}Z`,
+        createdAt: `2026-10-0${1 + (i % 9)}T10:00:00.${String(100 + i)}Z`,
       }));
       await seed([...tied, ...spread]);
 
@@ -97,11 +86,17 @@ describe('payment queries', () => {
         pages++;
       } while (cursor);
 
-      const expected = await dataSource.query<Array<{ id: string }>>(
-        'SELECT id FROM payments ORDER BY created_at DESC, id DESC',
-      );
+      // The defined order: createdAt descending, then id descending.
+      const expected = store
+        .find('payments')
+        .sort(
+          (x, y) =>
+            y.createdAt.getTime() - x.createdAt.getTime() || y.id.localeCompare(x.id),
+        )
+        .map((p) => p.id);
       expect(pages).toBe(4);
-      expect(seen).toEqual(expected.map((r) => r.id));
+      expect(seen).toHaveLength(25);
+      expect(seen).toEqual(expected);
     });
 
     it('defaults to 20 per page and reports the limit used', async () => {
@@ -116,22 +111,22 @@ describe('payment queries', () => {
         {
           status: PaymentStatus.FAILED,
           currency: 'USD',
-          createdAt: '2026-09-01T00:00:00.000000Z',
+          createdAt: '2026-09-01T00:00:00.000Z',
         },
         {
           status: PaymentStatus.FAILED,
           currency: 'NGN',
-          createdAt: '2026-09-15T00:00:00.000000Z',
+          createdAt: '2026-09-15T00:00:00.000Z',
         },
         {
           status: PaymentStatus.SUCCEEDED,
           currency: 'NGN',
-          createdAt: '2026-09-20T00:00:00.000000Z',
+          createdAt: '2026-09-20T00:00:00.000Z',
         },
         {
           status: PaymentStatus.FAILED,
           currency: 'NGN',
-          createdAt: '2026-10-05T00:00:00.000000Z',
+          createdAt: '2026-10-05T00:00:00.000Z',
         },
       ]);
 

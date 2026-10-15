@@ -1,14 +1,12 @@
-import type { PaymentStreamMessage } from '@payment-sim/shared';
 import { Router } from 'express';
-import type { DataSource } from 'typeorm';
 import type { AppDependencies } from './app';
 import type { Configuration } from './config';
 import { MockPaymentGateway } from './infra/gateway/mock-payment-gateway';
 import type { PaymentGateway } from './infra/gateway/payment-gateway';
-import { createDataSource } from './libs/core/db/data-source';
+import type { PaymentStore } from './infra/store/payment-store';
+import { openPaymentStore } from './infra/store/payment-store';
 import type { Logger } from './libs/core/logger/logger';
-import { DatabaseReadinessCheck } from './modules/health/checks/database.check';
-import { RealtimeReadinessCheck } from './modules/health/checks/realtime.check';
+import { StoreReadinessCheck } from './modules/health/checks/store.check';
 import { HealthService } from './modules/health/services/health.service';
 import { createPaymentController } from './modules/payments/controllers/payment.controller';
 import { IdempotencyKeyRepository } from './modules/payments/repository/idempotency-key.repository';
@@ -18,21 +16,20 @@ import { PaymentService } from './modules/payments/services/payment.service';
 import { JobRepository } from './modules/processing/repository/job.repository';
 import { PaymentProcessor } from './modules/processing/services/payment-processor';
 import { PaymentWorker } from './modules/processing/worker/payment-worker';
-import { CHANNELS } from './modules/realtime/channels';
 import { createStreamController } from './modules/realtime/controllers/stream.controller';
-import { PgNotifyPublisher } from './modules/realtime/payment-event.publisher';
-import { PgListener } from './modules/realtime/pg-listener';
+import type { PaymentEventPublisher } from './modules/realtime/payment-event.publisher';
+import { AfterCommitPublisher } from './modules/realtime/payment-event.publisher';
 import { RealtimeHub } from './modules/realtime/realtime-hub';
 import { SseRegistry } from './modules/realtime/sse';
 
 export interface Container extends AppDependencies {
-  dataSource: DataSource;
+  store: PaymentStore;
   paymentService: PaymentService;
   gateway: PaymentGateway;
+  publisher: PaymentEventPublisher;
   /** Not started here: server.ts starts it when WORKER_ENABLED, tests drive it directly. */
   worker: PaymentWorker;
   hub: RealtimeHub;
-  listener: PgListener;
   streams: SseRegistry;
   /** End open SSE responses so the HTTP server can finish closing. */
   closeStreams(): void;
@@ -41,8 +38,8 @@ export interface Container extends AppDependencies {
 }
 
 export interface ContainerOverrides {
-  /** An already-initialised data source (tests). The container will not close it. */
-  dataSource?: DataSource;
+  /** An already-open store (tests). The container will not close it. */
+  store?: PaymentStore;
   clock?: () => Date;
   gateway?: PaymentGateway;
   random?: () => number;
@@ -60,22 +57,22 @@ export async function createContainer(
 ): Promise<Container> {
   const shutdownHooks: Array<() => Promise<void>> = [];
 
-  let dataSource = overrides.dataSource;
-  if (!dataSource) {
-    const owned = createDataSource({
-      url: config.DATABASE_URL,
+  let store = overrides.store;
+  if (!store) {
+    const owned = await openPaymentStore({
+      file: config.DATA_FILE,
       logger,
-      poolMax: config.DATABASE_POOL_MAX,
-      statementTimeoutMs: config.DATABASE_STATEMENT_TIMEOUT_MS,
-      slowQueryMs: config.DATABASE_SLOW_QUERY_MS,
+      clock: overrides.clock,
     });
-    await owned.initialize();
-    shutdownHooks.push(() => owned.destroy());
-    logger.info('database connected');
-    dataSource = owned;
+    // Closing flushes anything pending and releases the data file's lock.
+    shutdownHooks.push(() => owned.close());
+    logger.info(
+      { file: owned.persistent ? config.DATA_FILE : '(in memory)' },
+      'storage ready',
+    );
+    store = owned;
   }
 
-  const manager = dataSource.manager;
   const gateway =
     overrides.gateway ??
     new MockPaymentGateway({
@@ -90,21 +87,25 @@ export async function createContainer(
     maxDelayMs: config.RETRY_MAX_DELAY_MS,
   };
 
-  // The service wakes the local worker after enqueueing and the worker needs the service:
-  // the callback reads `worker` only when invoked, after both exist. Other instances' workers
-  // are woken through NOTIFY (see the listener below).
+  const idempotencyKeys = new IdempotencyKeyRepository(store);
+  const purged = await idempotencyKeys.purgeExpired(store.now());
+  if (purged > 0) logger.info({ purged }, 'removed expired idempotency keys');
+
+  // The publisher wakes the worker after a job commits and the worker needs the service:
+  // the callback reads `worker` only when invoked, after both exist.
+  const hub = new RealtimeHub(logger);
+  const publisher = new AfterCommitPublisher(hub, () => worker.notify());
   const paymentService = new PaymentService({
-    dataSource,
-    payments: new PaymentRepository(manager),
-    events: new PaymentEventRepository(manager),
-    jobs: new JobRepository(manager),
-    idempotencyKeys: new IdempotencyKeyRepository(manager),
+    store,
+    payments: new PaymentRepository(store),
+    events: new PaymentEventRepository(store),
+    jobs: new JobRepository(store),
+    idempotencyKeys,
     gateway,
-    publisher: new PgNotifyPublisher(),
+    publisher,
     logger,
     clock: overrides.clock,
     jobMaxAttempts: config.JOB_MAX_ATTEMPTS,
-    onJobEnqueued: () => worker.notify(),
   });
 
   const processor = new PaymentProcessor({
@@ -118,7 +119,7 @@ export async function createContainer(
   });
   const worker = new PaymentWorker(
     {
-      jobs: new JobRepository(manager),
+      jobs: new JobRepository(store),
       processor,
       payments: paymentService,
       logger,
@@ -132,39 +133,12 @@ export async function createContainer(
       backoff,
     },
   );
-
-  const hub = new RealtimeHub(logger);
-  const listener = new PgListener({
-    connectionString: config.databaseUrlUnpooled,
-    channels: [CHANNELS.PAYMENT_EVENTS, CHANNELS.JOBS_ENQUEUED],
-    logger,
-    onNotification(channel, payload) {
-      if (channel === CHANNELS.JOBS_ENQUEUED) {
-        worker.notify();
-        return;
-      }
-      try {
-        hub.publish(JSON.parse(payload) as PaymentStreamMessage);
-      } catch (err) {
-        logger.error({ err, channel }, 'unreadable notification payload');
-      }
-    },
-    onConnected({ reconnect }) {
-      if (!reconnect) return;
-      // Anything committed while disconnected was not delivered: tell clients, wake workers.
-      hub.resync();
-      worker.notify();
-    },
-  });
-  await listener.start();
-  const streams = new SseRegistry(config.SSE_MAX_CLIENTS, config.SSE_HEARTBEAT_MS);
-
-  // Hooks run in reverse: stop the worker (drains jobs), stop listening, then close the pool.
-  shutdownHooks.push(() => listener.stop());
+  // Hooks run in reverse: stop the worker (drains in-flight jobs), then close the store.
   shutdownHooks.push(() => worker.stop());
 
+  const streams = new SseRegistry(config.SSE_MAX_CLIENTS, config.SSE_HEARTBEAT_MS);
   const healthService = new HealthService(
-    [new DatabaseReadinessCheck(dataSource), new RealtimeReadinessCheck(listener)],
+    [new StoreReadinessCheck(store)],
     logger,
     config.buildSha,
   );
@@ -184,12 +158,12 @@ export async function createContainer(
   return {
     config,
     logger,
-    dataSource,
+    store,
     paymentService,
     gateway,
+    publisher,
     worker,
     hub,
-    listener,
     streams,
     healthService,
     apiRouter,

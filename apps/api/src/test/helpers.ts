@@ -12,7 +12,8 @@ import { HealthService } from '../modules/health/services/health.service';
 export function testConfig(env: NodeJS.ProcessEnv = {}): Readonly<Configuration> {
   return loadConfig({
     NODE_ENV: 'test',
-    DATABASE_URL: 'postgresql://test:test@localhost:5432/payments_test',
+    // In memory unless a test opts into a file: nothing touches the working directory.
+    DATA_FILE: '',
     ...env,
   });
 }

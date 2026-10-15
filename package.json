@@ -1,7 +1,7 @@
 {
   "name": "payment-simulation",
   "private": true,
-  "description": "Payment processing simulation: Express + Postgres microservice with a Next.js dashboard",
+  "description": "Payment processing simulation: Express microservice with JSON file persistence and a Next.js dashboard",
   "packageManager": "pnpm@9.2.0",
   "engines": {
     "node": ">=24"
@@ -13,7 +13,6 @@
     "dev": "pnpm -r --parallel dev",
     "typecheck": "pnpm build:shared && pnpm -r typecheck",
     "test": "pnpm build:shared && pnpm -r test",
-    "test:int": "pnpm build:shared && pnpm -r --if-present test:int",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
