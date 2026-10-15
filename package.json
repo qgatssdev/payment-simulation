@@ -13,6 +13,7 @@
     "dev": "pnpm -r --parallel dev",
     "typecheck": "pnpm build:shared && pnpm -r typecheck",
     "test": "pnpm build:shared && pnpm -r test",
+    "test:int": "pnpm build:shared && pnpm -r --if-present test:int",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

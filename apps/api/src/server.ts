@@ -26,7 +26,13 @@ async function main(): Promise<void> {
   });
   registerProcessHandlers(logger);
 
-  const container = await createContainer(config, logger);
+  let container;
+  try {
+    container = await createContainer(config, logger);
+  } catch (err) {
+    logger.fatal({ err }, 'startup failed');
+    process.exit(1);
+  }
   const app = createApp(container);
 
   const server = app.listen(config.PORT, () => {

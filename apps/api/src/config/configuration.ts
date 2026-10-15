@@ -72,6 +72,22 @@ export class Configuration {
 
   @Type(() => Number)
   @IsInt()
+  @Min(1)
+  @Max(100)
+  DATABASE_POOL_MAX = 10;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  DATABASE_STATEMENT_TIMEOUT_MS = 10_000;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  DATABASE_SLOW_QUERY_MS = 500;
+
+  @Type(() => Number)
+  @IsInt()
   @Min(1000)
   RATE_LIMIT_WINDOW_MS = 60_000;
 
