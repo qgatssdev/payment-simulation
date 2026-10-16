@@ -1,0 +1,18 @@
+[
+  { "goto": "/payments/new" },
+  { "click": { "role": "radio", "name": "Success (ending 4242)" } },
+  { "fill": { "label": "Description", "value": "verify ${runId}: refund" } },
+  { "click": { "role": "button", "name": "Create payment", "exact": true } },
+  { "expectUrl": "/payments/[0-9a-f-]{36}$" },
+  { "saveUrlMatch": { "var": "paymentId", "regex": "/payments/([0-9a-f-]{36})" } },
+  { "expect": { "role": "status", "name": "Status: SUCCEEDED", "timeout": 15000 } },
+  { "expectEnabled": { "role": "button", "name": "Refund payment", "enabled": true } },
+  { "fill": { "label": "Reason (optional)", "value": "verify ${runId}: item returned" } },
+  { "click": { "role": "button", "name": "Refund payment" } },
+  { "expect": { "role": "status", "name": "Status: REFUNDED", "timeout": 10000 } },
+  { "expectText": { "text": "Succeeded → Refunded" } },
+  { "expectText": { "text": "item returned" } },
+  { "expectEnabled": { "role": "button", "name": "Refund payment", "enabled": false } },
+  { "snapshot": "01-refunded" },
+  { "screenshot": "01-refunded" }
+]

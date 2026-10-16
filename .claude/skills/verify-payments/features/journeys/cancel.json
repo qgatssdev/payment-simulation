@@ -1,0 +1,24 @@
+[
+  { "goto": "/payments/new" },
+  { "click": { "role": "radio", "name": "Success (ending 4242)" } },
+  { "fill": { "label": "Description", "value": "verify ${runId}: cancel" } },
+  { "click": { "role": "button", "name": "Create payment", "exact": true } },
+  { "expectUrl": "/payments/[0-9a-f-]{36}$" },
+  { "saveUrlMatch": { "var": "paymentId", "regex": "/payments/([0-9a-f-]{36})" } },
+  { "expect": { "role": "status", "name": "Status: PENDING" } },
+  { "expectEnabled": { "role": "button", "name": "Cancel payment", "enabled": true } },
+  { "snapshot": "01-pending" },
+  {
+    "fill": {
+      "label": "Reason (optional)",
+      "value": "verify ${runId}: customer changed mind"
+    }
+  },
+  { "click": { "role": "button", "name": "Cancel payment" } },
+  { "expect": { "role": "status", "name": "Status: CANCELLED", "timeout": 10000 } },
+  { "expectText": { "text": "customer changed mind" } },
+  { "expectEnabled": { "role": "button", "name": "Cancel payment", "enabled": false } },
+  { "expectEnabled": { "role": "button", "name": "Refund payment", "enabled": false } },
+  { "snapshot": "02-cancelled" },
+  { "screenshot": "02-cancelled" }
+]

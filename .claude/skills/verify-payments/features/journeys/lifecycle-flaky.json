@@ -1,0 +1,15 @@
+[
+  { "goto": "/payments/new" },
+  { "click": { "role": "radio", "name": "Flaky gateway" } },
+  { "fill": { "label": "Description", "value": "verify ${runId}: flaky" } },
+  { "click": { "role": "button", "name": "Create payment", "exact": true } },
+  { "expectUrl": "/payments/[0-9a-f-]{36}$" },
+  { "saveUrlMatch": { "var": "paymentId", "regex": "/payments/([0-9a-f-]{36})" } },
+  { "expect": { "role": "status", "name": "Live updates: Live" } },
+  { "expectText": { "text": "Gateway attempt 1 failed", "timeout": 15000 } },
+  { "expectText": { "text": "Gateway attempt 2 failed", "timeout": 15000 } },
+  { "expect": { "role": "status", "name": "Status: SUCCEEDED", "timeout": 20000 } },
+  { "expectText": { "text": "Processing → Succeeded" } },
+  { "snapshot": "01-succeeded-after-retries" },
+  { "screenshot": "01-succeeded-after-retries" }
+]

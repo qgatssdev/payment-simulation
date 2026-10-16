@@ -1,0 +1,11 @@
+[
+  { "goto": "/payments/new" },
+  { "fill": { "label": "Card number", "value": "4242424242424241" } },
+  { "fill": { "label": "Amount", "value": "10.555" } },
+  { "click": { "role": "button", "name": "Create payment", "exact": true } },
+  { "expectText": { "text": "card number is invalid" } },
+  { "expectText": { "text": "Enter an amount above zero with at most 2 decimals" } },
+  { "expectUrl": "/payments/new$" },
+  { "snapshot": "01-validation-errors" },
+  { "screenshot": "01-validation-errors" }
+]

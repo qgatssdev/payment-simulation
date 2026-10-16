@@ -1,0 +1,35 @@
+[
+  { "goto": "/" },
+  { "expect": { "role": "heading", "name": "Dashboard" } },
+  { "expect": { "role": "status", "name": "Live updates: Live", "timeout": 10000 } },
+  { "snapshot": "01-before" },
+  { "click": { "role": "button", "name": "Run simulation" } },
+  { "expectText": { "text": "25 of 25 sent · 25 accepted", "timeout": 20000 } },
+  {
+    "expectCount": {
+      "role": "link",
+      "name": "Open payment Load test",
+      "min": 15,
+      "timeout": 10000
+    }
+  },
+  { "wait": 12000 },
+  { "snapshot": "02-after-simulation" },
+  { "screenshot": "02-after-simulation" },
+  { "click": { "role": "button", "name": "Load more" } },
+  {
+    "expectCount": {
+      "role": "link",
+      "name": "Open payment Load test",
+      "min": 25,
+      "timeout": 10000
+    }
+  },
+  { "snapshot": "03-after-load-more" },
+  { "select": { "label": "Status", "value": "FAILED" } },
+  {
+    "expectCount": { "role": "link", "name": "Open payment", "min": 1, "timeout": 10000 }
+  },
+  { "snapshot": "04-filtered-failed" },
+  { "screenshot": "04-filtered-failed" }
+]

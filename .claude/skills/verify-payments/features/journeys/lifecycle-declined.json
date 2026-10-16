@@ -1,0 +1,14 @@
+[
+  { "goto": "/payments/new" },
+  { "click": { "role": "radio", "name": "Insufficient funds" } },
+  { "fill": { "label": "Description", "value": "verify ${runId}: declined" } },
+  { "click": { "role": "button", "name": "Create payment", "exact": true } },
+  { "expectUrl": "/payments/[0-9a-f-]{36}$" },
+  { "saveUrlMatch": { "var": "paymentId", "regex": "/payments/([0-9a-f-]{36})" } },
+  { "expect": { "role": "status", "name": "Status: FAILED", "timeout": 15000 } },
+  { "expectText": { "text": "The card has insufficient funds" } },
+  { "expectEnabled": { "role": "button", "name": "Refund payment", "enabled": false } },
+  { "expectEnabled": { "role": "button", "name": "Cancel payment", "enabled": false } },
+  { "snapshot": "01-failed" },
+  { "screenshot": "01-failed" }
+]

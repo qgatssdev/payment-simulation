@@ -203,6 +203,8 @@ export function CreatePaymentForm({
                   type="button"
                   role="radio"
                   aria-checked={checked}
+                  aria-label={`${card.label} (ending ${card.number.slice(-4)})`}
+                  aria-describedby={`test-card-${card.number}`}
                   onClick={() =>
                     setValue('card.number', card.number, {
                       shouldValidate: formState.isSubmitted,
@@ -222,7 +224,10 @@ export function CreatePaymentForm({
                       ···· {card.number.slice(-4)}
                     </span>
                   </span>
-                  <span className="mt-0.5 block text-xs text-ink-2">
+                  <span
+                    id={`test-card-${card.number}`}
+                    className="mt-0.5 block text-xs text-ink-2"
+                  >
                     {card.description}
                   </span>
                 </button>

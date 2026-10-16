@@ -9,7 +9,12 @@ const COPY: Record<StreamState, string> = {
 
 export function LiveIndicator({ state }: { state: StreamState }) {
   return (
-    <span role="status" className="inline-flex items-center gap-2 text-xs text-ink-2">
+    // role="status" takes no name from its content, so it is labelled explicitly.
+    <span
+      role="status"
+      aria-label={`Live updates: ${COPY[state]}`}
+      className="inline-flex items-center gap-2 text-xs text-ink-2"
+    >
       <span
         aria-hidden
         className={cn(
