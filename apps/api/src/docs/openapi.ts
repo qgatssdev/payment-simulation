@@ -15,7 +15,7 @@ import type {
 import { requestSchemas, responseSchemas } from './schemas';
 
 /** The contract version (semver); bumped when the documented API changes. */
-export const API_VERSION = '1.0.0';
+export const API_VERSION = '1.1.0';
 
 const ref = (name: string): SchemaObject => ({ $ref: `#/components/schemas/${name}` });
 const responseRef = (name: string) => ({ $ref: `#/components/responses/${name}` });
@@ -145,6 +145,7 @@ ${cards}
 export function buildOpenApiDocument(version: string): OpenAPIObject {
   const requests = requestSchemas();
   const listQuery = requests.ListPaymentsQueryDto ?? {};
+  const insightsQuery = requests.InsightsQueryDto ?? {};
 
   const createPayment: OperationObject = {
     tags: ['Payments'],
@@ -403,6 +404,40 @@ export function buildOpenApiDocument(version: string): OpenAPIObject {
               description: 'Counts, success rate, volume, timings.',
               content: json(ref('StatsResponse')),
             },
+          },
+        },
+      },
+      '/api/v1/payments/{id}/request': {
+        get: {
+          tags: ['Payments'],
+          operationId: 'getPaymentRequest',
+          summary: 'Get the request that created a payment',
+          description:
+            'The creating request (card number and CVC masked), its idempotency key, how many times it was replayed, and the stored response replays receive.',
+          parameters: [paymentIdParam],
+          responses: {
+            '200': {
+              description: 'The creating request.',
+              content: json(ref('PaymentRequestResponse')),
+            },
+            '400': responseRef('ValidationFailed'),
+            '404': responseRef('NotFound'),
+          },
+        },
+      },
+      '/api/v1/stats/insights': {
+        get: {
+          tags: ['Payments'],
+          operationId: 'getInsights',
+          summary: 'Activity, outcomes and failure analysis over a window',
+          parameters: queryParameters(insightsQuery),
+          responses: {
+            '200': {
+              description:
+                'Bucketed activity and failure analysis for the window ending now.',
+              content: json(ref('InsightsResponse')),
+            },
+            '400': responseRef('ValidationFailed'),
           },
         },
       },

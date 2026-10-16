@@ -25,6 +25,7 @@ import type { Logger } from '../../../libs/core/logger/logger';
 import { requestContext } from '../../../libs/core/logger/request-context';
 import type { JobRepository } from '../../processing/repository/job.repository';
 import type { PaymentEventPublisher } from '../../realtime/payment-event.publisher';
+import type { IdempotencyKey } from '../entity/idempotency-key.entity';
 import type { PaymentEvent } from '../entity/payment-event.entity';
 import type { Payment } from '../entity/payment.entity';
 import { toPaymentView, toStreamMessage } from '../mappers/payment.mapper';
@@ -81,6 +82,9 @@ export interface FailedAttempt {
   code: PaymentFailureCode;
   message: string;
   retryAt: Date;
+  /** When the failed gateway call started, and how long it ran before failing. */
+  startedAt?: string;
+  durationMs?: number;
 }
 
 /** Applies a change to a freshly read payment and describes the audit event for it. */
@@ -128,6 +132,7 @@ export class PaymentService {
           { idempotencyKey, paymentId: claim.existing.paymentId },
           'replaying idempotent response',
         );
+        await keys.recordReplay(idempotencyKey, now);
         return {
           statusCode: claim.existing.responseStatus ?? 202,
           body: claim.existing.responseBody as ApiSuccess<PaymentView>,
@@ -192,8 +197,17 @@ export class PaymentService {
       currency: query.currency,
       from: query.from,
       to: query.to,
+      search: query.q || undefined,
     });
     return { items: page.items, nextCursor: page.next ? encodeCursor(page.next) : null };
+  }
+
+  /** The creating request and its idempotency record, for the payment inspector. */
+  async creationRequest(
+    id: string,
+  ): Promise<{ payment: Payment; key: IdempotencyKey | null }> {
+    const payment = await this.get(id);
+    return { payment, key: await this.deps.idempotencyKeys.findForPayment(id) };
   }
 
   async listEvents(paymentId: string): Promise<PaymentEvent[]> {
@@ -295,6 +309,9 @@ export class PaymentService {
           attempt: failure.attempt,
           code: failure.code,
           retryAt: failure.retryAt.toISOString(),
+          ...(failure.startedAt === undefined
+            ? {}
+            : { startedAt: failure.startedAt, durationMs: failure.durationMs }),
         },
       };
     });

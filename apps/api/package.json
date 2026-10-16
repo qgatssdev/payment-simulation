@@ -9,6 +9,7 @@
     "build": "pnpm clean && tsc -p tsconfig.build.json",
     "dev": "tsx watch --clear-screen=false src/server.ts",
     "start": "node dist/server.js",
+    "seed": "tsx src/scripts/seed.ts",
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:cov": "jest --coverage"

@@ -6,6 +6,7 @@ import type { PaymentGateway } from './infra/gateway/payment-gateway';
 import type { PaymentStore } from './infra/store/payment-store';
 import { openPaymentStore } from './infra/store/payment-store';
 import type { Logger } from './libs/core/logger/logger';
+import { InsightsService } from './modules/insights/services/insights.service';
 import { StoreReadinessCheck } from './modules/health/checks/store.check';
 import { HealthService } from './modules/health/services/health.service';
 import { createPaymentController } from './modules/payments/controllers/payment.controller';
@@ -144,7 +145,12 @@ export async function createContainer(
   );
 
   const apiRouter = Router();
-  apiRouter.use(createPaymentController(paymentService));
+  const insights = new InsightsService({
+    payments: new PaymentRepository(store),
+    events: new PaymentEventRepository(store),
+    clock: overrides.clock,
+  });
+  apiRouter.use(createPaymentController(paymentService, insights));
   apiRouter.use(
     createStreamController({
       payments: paymentService,

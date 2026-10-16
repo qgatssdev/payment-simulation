@@ -1,20 +1,44 @@
-import type { Metadata } from 'next';
-import { AppHeader } from '@/components/app-header';
+import type { Metadata, Viewport } from 'next';
+import { JetBrains_Mono, Mona_Sans } from 'next/font/google';
 import { Providers } from '@/components/providers';
+import { AppShell } from '@/components/shell/app-shell';
+import { THEME_BOOT_SCRIPT } from '@/lib/theme';
 import './globals.css';
+
+const sans = Mona_Sans({ subsets: ['latin'], variable: '--font-mona', display: 'swap' });
+const mono = JetBrains_Mono({
+  subsets: ['latin'],
+  variable: '--font-jetbrains',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: { default: 'Payment Simulation', template: '%s · Payment Simulation' },
-  description: 'Create payments and watch them move through processing in real time.',
+  description:
+    'Accept payments, watch them move through processing live, and see why they fail.',
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#f5f4f7' },
+    { media: '(prefers-color-scheme: dark)', color: '#111014' },
+  ],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen">
+    // The boot script sets data-theme before paint, so the attribute legitimately differs.
+    <html
+      lang="en"
+      className={`${sans.variable} ${mono.variable}`}
+      suppressHydrationWarning
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
+      </head>
+      <body className="min-h-dvh">
         <Providers>
-          <AppHeader />
-          <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6">{children}</main>
+          <AppShell>{children}</AppShell>
         </Providers>
       </body>
     </html>

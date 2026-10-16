@@ -1,19 +1,20 @@
-# Dashboard
+# Overview, payments list and simulator
 
-The dashboard summarises all payments (count, success rate, captured volume per currency, p50/p95 processing time), charts payments by status, lists payments newest first with status and currency filters and cursor pagination, and updates live as payments change. Its load simulator fires a burst of concurrent payments across every test-card scenario.
+The overview answers "how are payments doing?" for a time window (`15m`, `1h`, `24h`, `7d`, kept in the URL as `?range=`): approval rate as the hero figure, approved volume, payments per minute, time to final state and payments rescued by retry; the live pipeline (the state machine with each state's count, payments animating between states as events stream in); outcomes over time; live activity; and why payments failed. The payments page lists everything newest first with search and filters in the URL. The simulator fires a run of concurrent payments and follows each one live to a summary.
 
 ## Sub-features
 
-- `dash-stats` stat tiles and the payments-by-status chart reflect current data.
-- `dash-live` the table and stats update without reload (`Live updates: Live`).
-- `dash-simulate` `Run simulation` sends N concurrent payments and reports how many were accepted.
-- `dash-paginate` `Load more` appends the next page.
-- `dash-filter` the `Status` and `Currency` selects filter the table.
+- `dash-headline` hero approval rate and the four headline tiles reflect `GET /stats/insights` for the chosen range.
+- `dash-pipeline` the pipeline shows `GET /stats` counts per state and moves with the stream (`Live updates: Live`).
+- `dash-failures` why payments failed, what retries rescued, attempts per payment.
+- `dash-simulate` `Run simulation` sends N payments (at once or spread), tracks them to a `Summary`, and lists rejected requests (rate limits) separately.
+- `dash-list` payments list: `Load more`, `Status` and `Currency` filters, search by id, email or description (accent-insensitive), all reflected in the URL.
+- `dash-palette` ⌘K opens a palette that searches payments and runs commands.
 
 ## How to get to it (user POV)
 
-- Open `$WEB_URL/` or choose `Dashboard` in the header.
-- `GET $API_URL/api/v1/stats`, `GET $API_URL/api/v1/payments?status=&currency=&limit=&cursor=`, and the global stream `GET $API_URL/api/v1/stream`.
+- Overview: `$WEB_URL/` (sidebar `Overview`). Payments: `$WEB_URL/payments`. Simulator: `$WEB_URL/simulator`. Phone: the bottom tab bar.
+- `GET $API_URL/api/v1/stats/insights?range=1h`, `GET $API_URL/api/v1/stats`, `GET $API_URL/api/v1/payments?q=&status=&currency=&limit=&cursor=`, and the global stream `GET $API_URL/api/v1/stream`.
 
 ## Driving it with browse.mjs and curl
 
@@ -21,15 +22,16 @@ Preconditions:
 
 - `scripts/doctor.sh` passes.
 
-- **Simulate and watch.** Choose `Run simulation` (25 payments). Run `node .claude/skills/verify-payments/scripts/browse.mjs dashboard .claude/skills/verify-payments/features/journeys/dashboard.json`. The status `25 of 25 sent · 25 accepted …` appears, at least 15 `Open payment Load test …` links show without a reload, and after ~12 s the chart and tiles show settled counts.
-- **Pagination.** In the same journey, `Load more` raises the `Open payment Load test` link count to at least 25.
-- **Filter.** In the same journey, `Status` set to `FAILED` leaves only failed rows (check `04-filtered-failed.aria.txt`: every row's status reads `Failed`).
-- **Stats, second view.** Run `curl -s "$API_URL/api/v1/stats"`. `total` matches the payments created this run; `countsByStatus` sums to `total`; `successRate` is `(SUCCEEDED+REFUNDED)/(SUCCEEDED+REFUNDED+FAILED)`.
-- **Filtered list, second view.** Run `curl -s "$API_URL/api/v1/payments?status=FAILED&limit=100"`. Every item has `"status":"FAILED"`; failures come from the decline, insufficient-funds and timeout cards plus random failures of card `4111…1111`.
+- **Simulate, list, filter, overview.** Run `node .claude/skills/verify-payments/scripts/browse.mjs dashboard .claude/skills/verify-payments/features/journeys/dashboard.json`. On `/simulator` the status `25 of 25 sent · 25 accepted · …` appears and the heading turns `Run complete` with a `Summary`; on `/payments` at least 15, then (after `Load more`) 25 `Open payment Load test …` links show; `Status` `FAILED` puts `status=FAILED` in the URL and leaves only failed rows (`04-filtered-failed.aria.txt`); `/` shows the `Overview` heading, the pipeline node `Succeeded: N payments now…` and `Why payments failed`.
+- **Insights, second view.** Run `curl -s "$API_URL/api/v1/stats/insights?range=15m"`. `totals.created` is at least 25; `buckets` has 30 entries whose `created` sum equals `totals.created`; `failures.byCode` lists the decline, insufficient-funds and timeout failures of the run.
+- **Search, second view.** Run `curl -s "$API_URL/api/v1/payments?q=load%20test&limit=100"`. Every item's description contains `Load test`; `q=koko` would match `Kòkó` (accents are ignored).
+- **Stats.** Run `curl -s "$API_URL/api/v1/stats"`. `countsByStatus` sums to `total`.
 
 ## Gotchas
 
-- The simulator's card mix includes `4111111111111111`, whose outcome is random (configurable decline and transient-error rates); exact success counts vary between runs.
-- Payments created in the same millisecond are ordered by id, not by their `Load test #` number; assert on counts, not on which number lands on which page.
-- Stats and new rows refresh at most once a second after a burst; rows already on screen update immediately.
-- The chart is `aria-hidden` with an equivalent screen-reader table captioned `Payments by status`; read values from that table in snapshots.
+- The simulator's `Every scenario` mix includes `4111111111111111`, whose outcome is random; exact success counts vary.
+- The API allows 60 writes a minute per client (`RATE_LIMIT_WRITE_MAX`): a 100-payment run shows `RATE_LIMITED (429)` under `Rejected requests`. That is the rate limit working, not a failure of the journey.
+- Payments created in the same millisecond are ordered by id; assert on counts, not on which `Load test #` lands on which page.
+- The simulator tags each run's descriptions with `run xxxx`; `See these payments` opens `/payments?q=run xxxx`.
+- Lists and insights refresh at most once a second after a burst; rows already on screen, pipeline counts and the activity feed update immediately.
+- Charts are `aria-hidden` with screen-reader tables (`Payment outcomes per …`); the pipeline nodes are `role="img"` named `<Status>: <n> payments now. …`.

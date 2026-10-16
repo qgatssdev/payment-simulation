@@ -8,12 +8,13 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import type { Currency } from '../currency';
 import { SUPPORTED_CURRENCIES } from '../currency';
 import { PaymentStatus } from '../payment-status';
-import { upperString } from './transforms';
+import { trimString, upperString } from './transforms';
 
 export const DEFAULT_PAGE_LIMIT = 20;
 export const MAX_PAGE_LIMIT = 100;
@@ -47,4 +48,11 @@ export class ListPaymentsQueryDto {
   @IsOptional()
   @IsISO8601()
   to?: string;
+
+  /** Search: a payment id (or its start), or text in the customer email or description. */
+  @IsOptional()
+  @Transform(trimString)
+  @IsString()
+  @MaxLength(100)
+  q?: string;
 }

@@ -1,12 +1,22 @@
+import { Compass } from 'lucide-react';
 import Link from 'next/link';
+import { buttonClasses } from '@/components/ui/button';
+import { EmptyState } from '@/components/ui/states';
 
 export default function NotFound() {
   return (
-    <div className="py-16 text-center">
-      <h1 className="text-2xl font-semibold text-ink">Page not found</h1>
-      <Link href="/" className="mt-3 inline-block text-sm text-accent-ink underline">
-        Back to the dashboard
-      </Link>
+    <div className="panel">
+      <EmptyState
+        icon={Compass}
+        title="This page does not exist"
+        action={
+          <Link href="/" className={buttonClasses('secondary', undefined, 'sm')}>
+            Go to the overview
+          </Link>
+        }
+      >
+        The link may be old. Search for a payment with ⌘K, or start from the overview.
+      </EmptyState>
     </div>
   );
 }

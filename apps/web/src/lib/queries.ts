@@ -1,9 +1,13 @@
 import type {
   ApiPage,
+  InsightsRange,
   PaymentEventView,
   PaymentStatus,
+  PaymentStreamMessage,
   PaymentView,
+  StatsView,
 } from '@payment-sim/shared';
+import { PaymentEventType, PaymentStatus as Status } from '@payment-sim/shared';
 import type { InfiniteData, QueryClient } from '@tanstack/react-query';
 import {
   useInfiniteQuery,
@@ -20,6 +24,8 @@ export const queryKeys = {
   payment: (id: string) => ['payments', 'detail', id] as const,
   events: (id: string) => ['payments', 'events', id] as const,
   stats: ['stats'] as const,
+  insights: (range: InsightsRange) => ['stats', 'insights', range] as const,
+  request: (id: string) => ['payments', 'request', id] as const,
 };
 
 export function usePaymentList(filters: Omit<ListQuery, 'cursor'>) {
@@ -41,6 +47,47 @@ export function usePaymentEvents(id: string) {
 
 export function useStats() {
   return useQuery({ queryKey: queryKeys.stats, queryFn: () => api.getStats() });
+}
+
+export function useInsights(range: InsightsRange) {
+  return useQuery({
+    queryKey: queryKeys.insights(range),
+    queryFn: () => api.getInsights(range),
+    // Buckets roll over with time even when nothing happens.
+    refetchInterval: range === '15m' ? 15_000 : 30_000,
+    placeholderData: (previous) => previous,
+  });
+}
+
+export function usePaymentRequest(id: string) {
+  return useQuery({
+    queryKey: queryKeys.request(id),
+    queryFn: () => api.getPaymentRequest(id),
+  });
+}
+
+/**
+ * Apply a live event to the cached status counts at once, so the pipeline and headline
+ * numbers move with the stream; the throttled refetch then reconciles with the server.
+ */
+export function rememberCounts(client: QueryClient, message: PaymentStreamMessage): void {
+  const { event } = message;
+  client.setQueryData<StatsView>(queryKeys.stats, (stats) => {
+    if (!stats) return stats;
+    const counts = { ...stats.countsByStatus };
+    let total = stats.total;
+    if (event.type === PaymentEventType.CREATED) {
+      counts[Status.PENDING] += 1;
+      total += 1;
+    } else if (event.type === PaymentEventType.STATUS_CHANGED) {
+      if (event.fromStatus)
+        counts[event.fromStatus] = Math.max(0, counts[event.fromStatus] - 1);
+      if (event.toStatus) counts[event.toStatus] += 1;
+    } else {
+      return stats;
+    }
+    return { ...stats, countsByStatus: counts, total };
+  });
 }
 
 /** Never let an older copy overwrite a newer one: versions only go up. */

@@ -1,10 +1,15 @@
 [
-  { "goto": "/" },
-  { "expect": { "role": "heading", "name": "Dashboard" } },
+  { "goto": "/simulator" },
+  { "expect": { "role": "heading", "name": "Simulator" } },
   { "expect": { "role": "status", "name": "Live updates: Live", "timeout": 10000 } },
   { "snapshot": "01-before" },
   { "click": { "role": "button", "name": "Run simulation" } },
   { "expectText": { "text": "25 of 25 sent · 25 accepted", "timeout": 20000 } },
+  { "expect": { "role": "heading", "name": "Run complete", "timeout": 40000 } },
+  { "expect": { "role": "heading", "name": "Summary" } },
+  { "snapshot": "02-run-complete" },
+  { "screenshot": "02-run-complete" },
+  { "goto": "/payments" },
   {
     "expectCount": {
       "role": "link",
@@ -13,9 +18,6 @@
       "timeout": 10000
     }
   },
-  { "wait": 12000 },
-  { "snapshot": "02-after-simulation" },
-  { "screenshot": "02-after-simulation" },
   { "click": { "role": "button", "name": "Load more" } },
   {
     "expectCount": {
@@ -27,9 +29,16 @@
   },
   { "snapshot": "03-after-load-more" },
   { "select": { "label": "Status", "value": "FAILED" } },
+  { "expectUrl": "status=FAILED" },
   {
     "expectCount": { "role": "link", "name": "Open payment", "min": 1, "timeout": 10000 }
   },
   { "snapshot": "04-filtered-failed" },
-  { "screenshot": "04-filtered-failed" }
+  { "screenshot": "04-filtered-failed" },
+  { "goto": "/" },
+  { "expect": { "role": "heading", "name": "Overview", "exact": true } },
+  { "expect": { "role": "img", "name": "Succeeded:" } },
+  { "expect": { "role": "heading", "name": "Why payments failed" } },
+  { "snapshot": "05-overview" },
+  { "screenshot": "05-overview" }
 ]

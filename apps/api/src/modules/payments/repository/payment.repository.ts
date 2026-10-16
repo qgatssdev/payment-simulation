@@ -22,6 +22,8 @@ export interface PageQuery {
   currency?: Currency;
   from?: string;
   to?: string;
+  /** Id prefix, or a substring of the customer email or description; case-insensitive. */
+  search?: string;
 }
 
 export interface PaymentPage {
@@ -42,6 +44,11 @@ function newestFirst(a: PaymentData, b: PaymentData): number {
     b.createdAt.getTime() - a.createdAt.getTime() ||
     (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
   );
+}
+
+/** Case- and accent-insensitive form for search: "Kòkó" matches "koko". */
+function fold(text: string): string {
+  return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
 /** Linear interpolation between closest ranks: the same definition as SQL's percentile_cont. */
@@ -125,7 +132,9 @@ export class PaymentRepository extends BaseRepository<'payments'> {
     currency,
     from,
     to,
+    search,
   }: PageQuery): Promise<PaymentPage> {
+    const needle = search ? fold(search) : undefined;
     const fromTime = from ? new Date(from).getTime() : undefined;
     const toTime = to ? new Date(to).getTime() : undefined;
     const afterTime = after ? new Date(after.createdAt).getTime() : undefined;
@@ -138,6 +147,10 @@ export class PaymentRepository extends BaseRepository<'payments'> {
           (!currency || p.currency === currency) &&
           (fromTime === undefined || created >= fromTime) &&
           (toTime === undefined || created < toTime) &&
+          (!needle ||
+            p.id.startsWith(needle) ||
+            p.customerEmail.includes(needle) ||
+            (p.description !== null && fold(p.description).includes(needle))) &&
           (afterTime === undefined ||
             created < afterTime ||
             (created === afterTime && p.id < (after as KeysetCursor).id))
@@ -154,6 +167,11 @@ export class PaymentRepository extends BaseRepository<'payments'> {
           ? { createdAt: last.createdAt.toISOString(), id: last.id }
           : null,
     });
+  }
+
+  /** Every payment, for whole-population analytics (see the README on scale). */
+  all(): Promise<Payment[]> {
+    return Promise.resolve(this.reader.find('payments').map((p) => Payment.from(p)));
   }
 
   aggregates(): Promise<PaymentAggregates> {

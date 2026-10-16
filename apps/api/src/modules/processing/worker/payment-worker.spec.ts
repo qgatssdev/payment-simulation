@@ -175,6 +175,20 @@ describe('payment worker', () => {
         attempts: 3,
       });
       expect(await jobOf(id)).toMatchObject({ status: JobStatus.COMPLETED, attempts: 3 });
+
+      // Every gateway call is timed, so the attempts can be drawn to scale.
+      const timed = eventsOf(id).filter(
+        (e) =>
+          e.type === PaymentEventType.ATTEMPT_FAILED ||
+          e.toStatus === PaymentStatus.SUCCEEDED,
+      );
+      expect(timed).toHaveLength(3);
+      for (const event of timed) {
+        expect(event.metadata).toMatchObject({
+          startedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) as unknown,
+          durationMs: expect.any(Number) as unknown,
+        });
+      }
     });
 
     it('gives up on a gateway that keeps timing out, after the attempt budget', async () => {

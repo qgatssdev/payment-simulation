@@ -44,7 +44,10 @@ export function openPaymentStore({
     collections: {
       payments: { key: 'id', dates: ['createdAt', 'updatedAt', 'processedAt'] },
       paymentEvents: { key: 'id', dates: ['createdAt'] },
-      idempotencyKeys: { key: 'key', dates: ['createdAt', 'expiresAt'] },
+      idempotencyKeys: {
+        key: 'key',
+        dates: ['createdAt', 'expiresAt', 'lastReplayedAt'],
+      },
       jobs: {
         key: 'id',
         dates: ['createdAt', 'updatedAt', 'runAt', 'lockedAt', 'completedAt'],

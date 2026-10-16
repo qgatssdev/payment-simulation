@@ -1,51 +1,89 @@
-import type { PaymentStatus } from '@payment-sim/shared';
-import { Ban, CheckCircle2, Clock, Loader2, RotateCcw, XCircle } from 'lucide-react';
-import type { ComponentType } from 'react';
+import type { PaymentFailureCode } from '@payment-sim/shared';
+import { PaymentStatus } from '@payment-sim/shared';
 import { cn } from '@/lib/cn';
+import { REASON, STATUS } from '@/lib/vocabulary';
+
+export { STATUS_LABEL } from '@/lib/vocabulary';
 
 /**
- * Status always travels as icon + label; colour only reinforces it. Reserved status colours
- * are used for the two outcomes that mean good/critical; in-between states stay neutral.
+ * Status as icon + word: the icon wears the status colour on a faint wash of it; the word
+ * stays in ink. The same component everywhere a status appears.
  */
-const STYLES: Record<
-  PaymentStatus,
-  { icon: ComponentType<{ className?: string }>; tone: string; spin?: boolean }
-> = {
-  PENDING: { icon: Clock, tone: 'text-ink-2 border-line' },
-  PROCESSING: { icon: Loader2, tone: 'text-accent-ink border-accent/40', spin: true },
-  SUCCEEDED: { icon: CheckCircle2, tone: 'text-good-ink border-good/40' },
-  FAILED: { icon: XCircle, tone: 'text-critical-ink border-critical/40' },
-  CANCELLED: { icon: Ban, tone: 'text-ink-3 border-line' },
-  REFUNDED: { icon: RotateCcw, tone: 'text-ink-2 border-line' },
-};
-
-export const STATUS_LABEL: Record<PaymentStatus, string> = {
-  PENDING: 'Pending',
-  PROCESSING: 'Processing',
-  SUCCEEDED: 'Succeeded',
-  FAILED: 'Failed',
-  CANCELLED: 'Cancelled',
-  REFUNDED: 'Refunded',
-};
-
 export function StatusBadge({
   status,
   className,
+  size = 'md',
 }: {
   status: PaymentStatus;
   className?: string;
+  size?: 'md' | 'lg';
 }) {
-  const { icon: Icon, tone, spin } = STYLES[status];
+  const { icon: Icon, label, color } = STATUS[status];
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border bg-surface px-2.5 py-0.5 text-xs font-medium',
-        tone,
+        'inline-flex items-center gap-1.5 rounded-full font-medium whitespace-nowrap text-ink',
+        size === 'lg' ? 'h-8 pr-3.5 pl-2.5 text-sm' : 'h-6 pr-2.5 pl-1.5 text-xs',
         className,
       )}
+      style={{ backgroundColor: `color-mix(in oklab, ${color} 13%, transparent)` }}
     >
-      <Icon className={cn('size-3.5', spin && 'animate-spin')} aria-hidden />
-      {STATUS_LABEL[status]}
+      <Icon
+        aria-hidden
+        className={cn(
+          size === 'lg' ? 'size-4' : 'size-3.5',
+          status === PaymentStatus.PROCESSING && 'animate-spin [animation-duration:1.6s]',
+        )}
+        style={{ color }}
+      />
+      {label}
+    </span>
+  );
+}
+
+/** A failure reason as icon + word, in the reason's hue. */
+export function ReasonBadge({
+  code,
+  className,
+}: {
+  code: PaymentFailureCode;
+  className?: string;
+}) {
+  const { icon: Icon, label, color } = REASON[code];
+  return (
+    <span
+      className={cn(
+        'inline-flex h-6 items-center gap-1.5 rounded-full pr-2.5 pl-1.5 text-xs font-medium whitespace-nowrap text-ink',
+        className,
+      )}
+      style={{ backgroundColor: `color-mix(in oklab, ${color} 14%, transparent)` }}
+    >
+      <Icon aria-hidden className="size-3.5" style={{ color }} />
+      {label}
+    </span>
+  );
+}
+
+/** The bare mark: an icon in its colour on a tinted round tile (legends, lists, pipeline). */
+export function TermDot({
+  color,
+  icon: Icon,
+  className,
+}: {
+  color: string;
+  icon: (typeof STATUS)['PENDING']['icon'];
+  className?: string;
+}) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        'inline-flex size-7 shrink-0 items-center justify-center rounded-full',
+        className,
+      )}
+      style={{ backgroundColor: `color-mix(in oklab, ${color} 14%, transparent)` }}
+    >
+      <Icon className="size-3.5" style={{ color }} />
     </span>
   );
 }

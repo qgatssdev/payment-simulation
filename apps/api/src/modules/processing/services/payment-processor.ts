@@ -24,6 +24,12 @@ interface Failure {
   retryable: boolean;
 }
 
+/** When a gateway call started and how long it took: lets the UI draw attempts to scale. */
+interface AttemptTiming {
+  startedAt: string;
+  durationMs: number;
+}
+
 export interface PaymentProcessorDeps {
   payments: PaymentService;
   gateway: PaymentGateway;
@@ -73,11 +79,16 @@ export class PaymentProcessor {
       return { kind: 'done', detail: `payment already ${payment.status}` };
     }
 
+    const started = this.clock();
+    const timing = (): AttemptTiming => ({
+      startedAt: started.toISOString(),
+      durationMs: Math.max(0, this.clock().getTime() - started.getTime()),
+    });
     let result: ChargeResult;
     try {
       result = await this.charge(payment, job.attempts);
     } catch (err) {
-      return this.handleFailure(payment, job, this.classify(err));
+      return this.handleFailure(payment, job, this.classify(err), timing());
     }
 
     if (result.status === 'approved') {
@@ -87,6 +98,7 @@ export class PaymentProcessor {
           attempt: job.attempts,
           authorizationCode: result.authorizationCode,
           latencyMs: result.latencyMs,
+          ...timing(),
         },
         mutate: (p) => {
           p.attempts = job.attempts;
@@ -103,7 +115,7 @@ export class PaymentProcessor {
         message: result.message,
         retryable: false,
       },
-      { latencyMs: result.latencyMs },
+      { latencyMs: result.latencyMs, ...timing() },
     );
     return { kind: 'done', detail: `declined: ${result.code}` };
   }
@@ -147,12 +159,18 @@ export class PaymentProcessor {
     payment: Payment,
     job: Job,
     failure: Failure,
+    timing: AttemptTiming,
   ): Promise<JobOutcome> {
     if (!failure.retryable || job.attempts >= job.maxAttempts) {
       const message = failure.retryable
         ? `${failure.message}; gave up after ${job.attempts} attempts`
         : failure.message;
-      await this.markFailed(payment.id, job.attempts, { ...failure, message });
+      await this.markFailed(
+        payment.id,
+        job.attempts,
+        { ...failure, message },
+        { ...timing },
+      );
       return { kind: 'done', detail: `failed: ${failure.code}` };
     }
 
@@ -162,6 +180,7 @@ export class PaymentProcessor {
       code: failure.code,
       message: failure.message,
       retryAt: new Date(this.clock().getTime() + delayMs),
+      ...timing,
     });
     this.deps.logger.warn(
       { code: failure.code, attempt: job.attempts, delayMs },

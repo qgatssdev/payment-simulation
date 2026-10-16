@@ -61,6 +61,27 @@ export class IdempotencyKeyRepository {
     });
   }
 
+  /** Count a replay, in the transaction that answers it, so the payment page can show it. */
+  recordReplay(key: string, now: Date): Promise<void> {
+    return this.inTransaction((tx) => {
+      const existing = tx.get('idempotencyKeys', key);
+      if (!existing) return;
+      tx.put('idempotencyKeys', {
+        ...existing,
+        replayCount: (existing.replayCount ?? 0) + 1,
+        lastReplayedAt: now,
+      });
+    });
+  }
+
+  /** The key that created a payment, if it has not expired and been purged. */
+  findForPayment(paymentId: string): Promise<IdempotencyKey | null> {
+    const reader = this.tx ?? this.store;
+    return Promise.resolve(
+      reader.find('idempotencyKeys', (k) => k.paymentId === paymentId)[0] ?? null,
+    );
+  }
+
   /** Drop expired keys (at startup), so the file does not grow with every request forever. */
   purgeExpired(now: Date): Promise<number> {
     return this.store.transaction((tx) => {

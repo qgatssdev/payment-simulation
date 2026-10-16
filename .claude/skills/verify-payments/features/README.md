@@ -32,4 +32,4 @@ Each feature file starts with an H1 and one paragraph on the user-visible behavi
 - [Payment lifecycle](./payment-lifecycle.md) covers asynchronous processing seen live: success, declines, retries with backoff, timeouts, the timeline and the lifecycle diagram.
 - [Cancel and refund](./status-actions.md) covers client status changes, the state machine's limits, and If-Match concurrency control.
 - [Idempotent creation](./idempotency.md) covers replays, key reuse, and concurrent duplicates.
-- [Dashboard](./dashboard.md) covers statistics, the status chart, the live table with filters and pagination, and the load simulator.
+- [Overview, payments list and simulator](./dashboard.md) covers insights by time range, the live pipeline, failure analysis, the searchable payments list, the load simulator and the ⌘K palette.

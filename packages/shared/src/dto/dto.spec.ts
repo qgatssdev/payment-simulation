@@ -3,6 +3,7 @@ import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { PaymentStatus } from '../payment-status';
 import { CreatePaymentDto, MAX_PAYMENT_AMOUNT } from './create-payment.dto';
+import { INSIGHT_RANGES, INSIGHT_WINDOWS, InsightsQueryDto } from './insights-query.dto';
 import { ListPaymentsQueryDto } from './list-payments-query.dto';
 import { PaymentIdParamDto } from './payment-id-param.dto';
 import { UpdatePaymentStatusDto } from './update-payment-status.dto';
@@ -160,8 +161,30 @@ describe('ListPaymentsQueryDto', () => {
     ['status', { status: 'DONE' }],
     ['currency', { currency: 5 }],
     ['from', { from: 'yesterday' }],
+    ['q', { q: 'x'.repeat(101) }],
   ])('rejects an invalid %s', (field, query) => {
     expect(check(ListPaymentsQueryDto, query).fields).toEqual([field]);
+  });
+
+  it('trims the search text', () => {
+    expect(check(ListPaymentsQueryDto, { q: '  koko ' }).instance.q).toBe('koko');
+  });
+});
+
+describe('InsightsQueryDto', () => {
+  it('accepts each documented range, or none', () => {
+    for (const range of [...INSIGHT_RANGES, undefined]) {
+      expect(check(InsightsQueryDto, range ? { range } : {}).fields).toEqual([]);
+    }
+    expect(check(InsightsQueryDto, { range: 'forever' }).fields).toEqual(['range']);
+  });
+
+  it('draws about 24 to 30 whole buckets for every range', () => {
+    for (const { rangeMs, bucketMs } of Object.values(INSIGHT_WINDOWS)) {
+      expect(rangeMs % bucketMs).toBe(0);
+      expect(rangeMs / bucketMs).toBeGreaterThanOrEqual(24);
+      expect(rangeMs / bucketMs).toBeLessThanOrEqual(30);
+    }
   });
 });
 

@@ -2,6 +2,7 @@ import {
   CreatePaymentDto,
   DEFAULT_PAGE_LIMIT,
   HEADERS,
+  InsightsQueryDto,
   ListPaymentsQueryDto,
   PaymentIdParamDto,
   UpdatePaymentStatusDto,
@@ -15,11 +16,19 @@ import {
 } from '../../../libs/common/http/headers';
 import { BaseResponse } from '../../../libs/core/base/base.response';
 import { PaginatedResponse } from '../../../libs/core/base/paginated.response';
-import { toPaymentEventView, toPaymentView } from '../mappers/payment.mapper';
+import type { InsightsService } from '../../insights/services/insights.service';
+import {
+  toPaymentEventView,
+  toPaymentRequestView,
+  toPaymentView,
+} from '../mappers/payment.mapper';
 import { IdempotencyKeyRequiredError } from '../payment.errors';
 import type { PaymentService } from '../services/payment.service';
 
-export function createPaymentController(payments: PaymentService): Router {
+export function createPaymentController(
+  payments: PaymentService,
+  insights: InsightsService,
+): Router {
   const router = Router();
 
   router.get(
@@ -44,9 +53,24 @@ export function createPaymentController(payments: PaymentService): Router {
     }),
   );
 
+  router.get(
+    '/payments/:id/request',
+    endpoint({ params: PaymentIdParamDto }, async ({ params }, _req, res) => {
+      const { payment, key } = await payments.creationRequest(params.id);
+      res.json(BaseResponse.success(toPaymentRequestView(payment, key)));
+    }),
+  );
+
   router.get('/stats', async (_req, res) => {
     res.json(BaseResponse.success(await payments.stats()));
   });
+
+  router.get(
+    '/stats/insights',
+    endpoint({ query: InsightsQueryDto }, async ({ query }, _req, res) => {
+      res.json(BaseResponse.success(await insights.insights(query.range ?? '1h')));
+    }),
+  );
 
   router.post(
     '/payments',

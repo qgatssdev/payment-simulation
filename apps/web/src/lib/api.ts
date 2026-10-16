@@ -4,7 +4,10 @@ import type {
   ApiSuccess,
   Currency,
   ErrorCode,
+  InsightsRange,
+  InsightsView,
   PaymentEventView,
+  PaymentRequestView,
   PaymentStatus,
   PaymentView,
   StatsView,
@@ -49,6 +52,7 @@ export interface ListQuery {
   cursor?: string;
   status?: PaymentStatus;
   currency?: Currency;
+  q?: string;
   limit?: number;
 }
 
@@ -107,6 +111,18 @@ export const api = {
 
   async getStats(): Promise<StatsView> {
     return (await request<ApiSuccess<StatsView>>('/api/v1/stats')).body.data;
+  },
+
+  async getInsights(range: InsightsRange): Promise<InsightsView> {
+    return (
+      await request<ApiSuccess<InsightsView>>(`/api/v1/stats/insights?range=${range}`)
+    ).body.data;
+  },
+
+  async getPaymentRequest(id: string): Promise<PaymentRequestView> {
+    return (
+      await request<ApiSuccess<PaymentRequestView>>(`/api/v1/payments/${id}/request`)
+    ).body.data;
   },
 
   async createPayment(

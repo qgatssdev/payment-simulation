@@ -8,7 +8,7 @@
   { "click": { "role": "button", "name": "Create payment", "exact": true } },
   { "expectUrl": "/payments/[0-9a-f-]{36}$" },
   { "saveUrlMatch": { "var": "paymentId", "regex": "/payments/([0-9a-f-]{36})" } },
-  { "expectText": { "text": "NGN 1,234.56" } },
+  { "expectText": { "text": "₦1,234.56" } },
   { "expect": { "role": "status", "name": "Status: SUCCEEDED", "timeout": 15000 } },
   { "snapshot": "02-detail-succeeded" },
   { "screenshot": "02-detail-succeeded" }

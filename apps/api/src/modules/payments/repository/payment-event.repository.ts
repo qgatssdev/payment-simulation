@@ -47,6 +47,20 @@ export class PaymentEventRepository extends BaseRepository<'paymentEvents'> {
     );
   }
 
+  /** Events recorded in [from, to), oldest first. */
+  listBetween(from: Date, to: Date): Promise<PaymentEvent[]> {
+    const start = from.getTime();
+    const end = to.getTime();
+    return Promise.resolve(
+      this.reader
+        .find('paymentEvents', (e) => {
+          const at = e.createdAt.getTime();
+          return at >= start && at < end;
+        })
+        .sort(bySequence),
+    );
+  }
+
   /** Events after a sequence number, oldest first: the replay for a resuming stream. */
   listAfter(
     afterSequence: number,

@@ -80,7 +80,7 @@ describe('OpenAPI document', () => {
   it('derives list query parameters from ListPaymentsQueryDto', () => {
     const list = (document.paths?.['/api/v1/payments'] as { get: OperationObject }).get;
     const names = (list.parameters as Array<{ name: string }>).map((p) => p.name).sort();
-    expect(names).toEqual(['currency', 'cursor', 'from', 'limit', 'status', 'to']);
+    expect(names).toEqual(['currency', 'cursor', 'from', 'limit', 'q', 'status', 'to']);
   });
 
   it('lists every test card in the description', () => {

@@ -1,8 +1,8 @@
 /**
  * Unit tests and full-stack API tests (real container, in-memory or temp-file store) run
  * together: no external services are needed, so there is one suite and one coverage gate.
- * Tests, helpers, declarations and process entry points (exercised by running the built
- * service) are excluded from coverage.
+ * Tests, helpers, declarations and process entry points (the server, exercised by running the
+ * built service, and the demo seed script) are excluded from coverage.
  * @type {import('jest').Config}
  */
 module.exports = {
@@ -18,6 +18,7 @@ module.exports = {
     '!**/*.d.ts',
     '!test/**',
     '!server.ts',
+    '!scripts/**',
   ],
   coverageDirectory: '../coverage',
   coverageReporters: ['text-summary', 'lcov', 'json-summary'],

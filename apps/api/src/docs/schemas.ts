@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import {
   CardBrand,
+  INSIGHT_RANGES,
   ErrorCode,
   PaymentEventType,
   PaymentFailureCode,
@@ -36,6 +37,11 @@ const NORMALISATION_NOTES: Record<string, Record<string, string>> = {
   ListPaymentsQueryDto: {
     cursor: 'Opaque value from pagination.nextCursor of the previous page.',
     limit: 'Page size, default 20.',
+    q: 'A payment id or its start, or text in the customer email or description (case-insensitive).',
+  },
+  InsightsQueryDto: {
+    range:
+      'Window ending now: 15m (30 s buckets), 1h (2 min), 24h (1 h) or 7d (6 h). Default 1h.',
   },
 };
 
@@ -85,6 +91,13 @@ export function responseSchemas(): Record<string, SchemaObject> {
     required: Object.keys(properties).filter((k) => !optional.includes(k)),
     properties,
   });
+
+  const counts: Record<string, SchemaObject> = Object.fromEntries(
+    ['created', 'succeeded', 'failed', 'cancelled', 'refunded', 'retries'].map((k) => [
+      k,
+      { type: 'integer', minimum: 0 },
+    ]),
+  );
 
   return {
     PaymentStatus: { type: 'string', enum: [...PAYMENT_STATUSES] },
@@ -167,6 +180,83 @@ export function responseSchemas(): Record<string, SchemaObject> {
         p95: nullable({ type: 'integer' }),
       }),
     }),
+    Insights: strict({
+      range: { type: 'string', enum: [...INSIGHT_RANGES] },
+      from: isoDateTime,
+      to: isoDateTime,
+      bucketMs: { type: 'integer', minimum: 1 },
+      buckets: {
+        type: 'array',
+        description: 'Activity per bucket, counted from audit events, oldest first.',
+        items: strict({
+          start: isoDateTime,
+          ...counts,
+        }),
+      },
+      totals: strict({
+        ...counts,
+        approvalRate: nullable({ type: 'number', minimum: 0, maximum: 1 }),
+        approvedVolumeByCurrency: {
+          type: 'object',
+          description: 'Minor units approved in the window per currency.',
+          propertyNames: { enum: [...SUPPORTED_CURRENCIES] },
+          additionalProperties: { type: 'integer', minimum: 0 },
+        },
+        ratePerMinute: {
+          type: 'number',
+          minimum: 0,
+          description: 'Payments accepted per minute over the last five minutes.',
+        },
+        inFlight: {
+          type: 'integer',
+          minimum: 0,
+          description: 'PENDING or PROCESSING now.',
+        },
+      }),
+      latencyMs: strict({
+        p50: nullable({ type: 'integer' }),
+        p95: nullable({ type: 'integer' }),
+      }),
+      failures: strict({
+        byCode: { type: 'array', items: ref('CodeCount') },
+        retriesByCode: { type: 'array', items: ref('CodeCount') },
+        attempts: {
+          type: 'array',
+          items: strict({
+            attempts: { type: 'integer', minimum: 0 },
+            succeeded: { type: 'integer', minimum: 0 },
+            failed: { type: 'integer', minimum: 0 },
+          }),
+        },
+        firstAttemptSuccess: { type: 'integer', minimum: 0 },
+        recoveredByRetry: { type: 'integer', minimum: 0 },
+        failedAfterRetries: { type: 'integer', minimum: 0 },
+      }),
+    }),
+    CodeCount: strict({
+      code: { type: 'string', enum: Object.values(PaymentFailureCode) },
+      count: { type: 'integer', minimum: 0 },
+    }),
+    PaymentRequest: strict({
+      idempotencyKey: nullable({ type: 'string' }),
+      replayCount: { type: 'integer', minimum: 0 },
+      lastReplayedAt: nullable(isoDateTime),
+      keyExpiresAt: nullable(isoDateTime),
+      request: strict({
+        method: { const: 'POST' },
+        path: { type: 'string' },
+        body: {
+          type: 'object',
+          description: 'The body as received, card number and CVC masked.',
+        },
+      }),
+      response: nullable(
+        strict({
+          status: { type: 'integer' },
+          body: { description: 'The stored response every replay receives.' },
+        }),
+      ),
+    }),
     CursorPagination: strict({
       limit: { type: 'integer' },
       nextCursor: nullable({ type: 'string' }),
@@ -205,6 +295,8 @@ export function responseSchemas(): Record<string, SchemaObject> {
     },
     PaymentEventsResponse: envelope({ type: 'array', items: ref('PaymentEvent') }),
     StatsResponse: envelope(ref('Stats')),
+    InsightsResponse: envelope(ref('Insights')),
+    PaymentRequestResponse: envelope(ref('PaymentRequest')),
     Liveness: envelope(
       strict({
         status: { const: 'ok' },

@@ -169,10 +169,36 @@ describe('API contract', () => {
     await patch(id, { status: 'REFUNDED' }); // 409
     await patch(id, { status: 'SUCCEEDED' }); // 400
     await patch('6f1c2a8e-3b7d-4c1e-9f0a-2b3c4d5e6f70', { status: 'CANCELLED' }); // 404
+
+    const origin = (path: string) =>
+      conforms(
+        request(app).get(`/api/v1/payments/${path}/request`),
+        'GET',
+        '/api/v1/payments/{id}/request',
+      );
+    const creation = await origin(id);
+    expect(creation.body.data).toMatchObject({
+      idempotencyKey,
+      replayCount: 1,
+      request: { body: { card: { number: '•••• •••• •••• 4242', cvc: '•••' } } },
+      response: { status: 202 },
+    });
+    expect(JSON.stringify(creation.body)).not.toContain('4242424242424242');
+    await origin('6f1c2a8e-3b7d-4c1e-9f0a-2b3c4d5e6f70');
+    await origin('nope');
   });
 
   it('stats and probes', async () => {
     await conforms(request(app).get('/api/v1/stats'), 'GET', '/api/v1/stats');
+    const insights = (query: object) =>
+      conforms(
+        request(app).get('/api/v1/stats/insights').query(query),
+        'GET',
+        '/api/v1/stats/insights',
+      );
+    await insights({});
+    await insights({ range: '7d' });
+    await insights({ range: 'forever' }); // 400
     await conforms(request(app).get('/health'), 'GET', '/health');
     await conforms(request(app).get('/ready'), 'GET', '/ready');
   });

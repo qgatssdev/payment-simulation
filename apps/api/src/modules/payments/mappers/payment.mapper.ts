@@ -1,8 +1,10 @@
 import type {
   PaymentEventView,
+  PaymentRequestView,
   PaymentStreamMessage,
   PaymentView,
 } from '@payment-sim/shared';
+import type { IdempotencyKey } from '../entity/idempotency-key.entity';
 import type { PaymentEvent } from '../entity/payment-event.entity';
 import type { Payment } from '../entity/payment.entity';
 
@@ -42,6 +44,39 @@ export function toPaymentEventView(event: PaymentEvent): PaymentEventView {
     reason: event.reason,
     metadata: event.metadata,
     createdAt: event.createdAt.toISOString(),
+  };
+}
+
+/**
+ * The request that created a payment. The card number and CVC were never stored, so the body
+ * is rebuilt from the payment with both masked: the same fields, never the secrets.
+ */
+export function toPaymentRequestView(
+  payment: Payment,
+  key: IdempotencyKey | null,
+): PaymentRequestView {
+  const body: Record<string, unknown> = {
+    amount: payment.amount,
+    currency: payment.currency,
+    customerEmail: payment.customerEmail,
+    ...(payment.description === null ? {} : { description: payment.description }),
+    card: {
+      number: `•••• •••• •••• ${payment.paymentMethod.last4}`,
+      expMonth: payment.paymentMethod.expMonth,
+      expYear: payment.paymentMethod.expYear,
+      cvc: '•••',
+    },
+  };
+  return {
+    idempotencyKey: key?.key ?? null,
+    replayCount: key?.replayCount ?? 0,
+    lastReplayedAt: key?.lastReplayedAt?.toISOString() ?? null,
+    keyExpiresAt: key?.expiresAt.toISOString() ?? null,
+    request: { method: 'POST', path: '/api/v1/payments', body },
+    response:
+      key?.responseStatus && key.responseBody
+        ? { status: key.responseStatus, body: key.responseBody }
+        : null,
   };
 }
 

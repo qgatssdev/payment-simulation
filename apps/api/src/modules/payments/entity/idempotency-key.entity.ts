@@ -13,4 +13,7 @@ export interface IdempotencyKey {
   paymentId: string | null;
   createdAt: Date;
   expiresAt: Date;
+  /** How many repeated requests were answered with the stored response (absent: none yet). */
+  replayCount?: number;
+  lastReplayedAt?: Date | null;
 }

@@ -6,13 +6,15 @@ export const metadata: Metadata = { title: 'New payment' };
 export default function NewPaymentPage() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-ink">New payment</h1>
+      <header>
+        <h1 className="text-[28px] font-semibold tracking-[-0.025em] text-ink">
+          New payment
+        </h1>
         <p className="mt-1 text-sm text-ink-2">
           Validated here with the same rules the API enforces, then accepted for
-          asynchronous processing.
+          processing in the background.
         </p>
-      </div>
+      </header>
       <CreatePaymentForm />
     </div>
   );

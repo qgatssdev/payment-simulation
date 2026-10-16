@@ -63,6 +63,24 @@ describe('payment queries', () => {
   const list = (query: Record<string, string | number> = {}) =>
     request(app).get('/api/v1/payments').query(query);
 
+  describe('GET /payments?q=', () => {
+    it('finds payments by id prefix, customer email or description, case-insensitively', async () => {
+      const [first, second] = await seed([
+        { description: 'Order #4821 · Kòkó Coffee', customerEmail: 'tobi@example.com' },
+        { description: 'Bike service', customerEmail: 'amara@example.com' },
+      ]);
+      const ids = async (q: string) =>
+        ((await list({ q })).body.data as Array<{ id: string }>).map((p) => p.id);
+
+      expect(await ids('kòkó')).toEqual([first]);
+      expect(await ids('KOKO coffee')).toEqual([first]); // accents optional
+      expect(await ids('AMARA@')).toEqual([second]);
+      expect(await ids((second as string).slice(0, 8))).toEqual([second]);
+      expect(await ids('nothing like this')).toEqual([]);
+      expect((await list({ q: 'x'.repeat(101) })).status).toBe(400);
+    });
+  });
+
   describe('GET /payments', () => {
     it('walks every row exactly once, newest first, even with identical timestamps', async () => {
       // 10 payments share one millisecond: only the id tie-break orders them.

@@ -1,7 +1,11 @@
 import { cn } from '@/lib/cn';
 
+/** Placeholder shaped like the content it stands in for. */
 export function Skeleton({ className }: { className?: string }) {
   return (
-    <div aria-hidden className={cn('animate-pulse rounded-md bg-surface-2', className)} />
+    <div
+      aria-hidden
+      className={cn('animate-pulse rounded-[10px] bg-sunken', className)}
+    />
   );
 }
