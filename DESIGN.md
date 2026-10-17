@@ -2,7 +2,7 @@
 
 The rules that keep new screens consistent. The tokens live in one file:
 [`apps/web/src/app/globals.css`](apps/web/src/app/globals.css). The status and failure-reason
-vocabulary lives in [`apps/web/src/lib/vocabulary.ts`](apps/web/src/lib/vocabulary.ts).
+vocabulary lives in [`apps/web/src/utils/vocabulary.ts`](apps/web/src/utils/vocabulary.ts).
 
 ## Direction
 
@@ -139,23 +139,24 @@ Motion is used only where it means something:
 
 ## Components
 
-| Component                                    | Where                                      | Notes                                                                             |
-| -------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------- |
-| `Button`, `buttonClasses`                    | `components/ui/button.tsx`                 | `primary` (brand, one per view), `secondary`, `danger`, `ghost`; `sm`, `md`, `lg` |
-| `Card`, `CardHeader`                         | `components/ui/card.tsx`                   | A panel with a title and an optional description and actions                      |
-| `TextField`, `SelectField`, `controlClasses` | `components/ui/field.tsx`                  | Label, hint and error wired with `aria-describedby`                               |
-| `Segmented`                                  | `components/ui/segmented.tsx`              | A radio group: ranges, run sizes, theme                                           |
-| `Sheet`                                      | `components/ui/sheet.tsx`                  | Modal; Escape and the scrim close it; focus returns                               |
-| `CopyButton`                                 | `components/ui/copy-button.tsx`            | Accessible name "Copy payment ID"; announces "copied"                             |
-| `NumberTicker`                               | `components/ui/number-ticker.tsx`          | Tabular, eased, respects reduced motion                                           |
-| `EmptyState`, `ErrorState`                   | `components/ui/states.tsx`                 | Says why, and the way forward; errors show the code and request id                |
-| `StatusBadge`, `ReasonBadge`, `TermDot`      | `components/status-badge.tsx`              | The vocabulary in UI form                                                         |
-| `LiveIndicator`, `StreamBanner`              | `components/shell/`                        | Stream status; the "Live updates paused" banner after 2.5s down                   |
-| `Pipeline`                                   | `components/overview/pipeline.tsx`         | The signature view; dots drawn imperatively by a `DotEngine`                      |
-| `ThroughputChart`                            | `components/overview/throughput-chart.tsx` | Mirrored outcomes chart, also used by the simulator                               |
-| `AttemptTimeline`                            | `components/payments/attempt-timeline.tsx` | Attempts and backoff to scale, plus a table                                       |
-| `JsonInspector`                              | `components/payments/json-inspector.tsx`   | Tabs, monochrome JSON, copy                                                       |
-| `CommandPalette`                             | `components/shell/command-palette.tsx`     | ⌘K: a combobox with a listbox                                                     |
+| Component                                    | Where                                                         | Notes                                                                             |
+| -------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `Button`, `buttonClasses`                    | `components/ui/button.tsx`                                    | `primary` (brand, one per view), `secondary`, `danger`, `ghost`; `sm`, `md`, `lg` |
+| `Card`, `CardHeader`                         | `components/ui/card.tsx`                                      | A panel with a title and an optional description and actions                      |
+| `TextField`, `SelectField`, `controlClasses` | `components/ui/field.tsx`                                     | Label, hint and error wired with `aria-describedby`                               |
+| `Segmented`                                  | `components/ui/segmented.tsx`                                 | A radio group: ranges, run sizes, theme                                           |
+| `Sheet`                                      | `components/ui/sheet.tsx`                                     | Modal; Escape and the scrim close it; focus returns                               |
+| `CopyButton`                                 | `components/ui/copyButton.tsx`                                | Accessible name "Copy payment ID"; announces "copied"                             |
+| `NumberTicker`                               | `components/ui/numberTicker.tsx`                              | Tabular, eased, respects reduced motion                                           |
+| `EmptyState`, `ErrorState`                   | `components/ui/states.tsx`                                    | Says why, and the way forward; errors show the code and request id                |
+| `StatusBadge`, `ReasonBadge`, `TermDot`      | `common/statusBadge.tsx`                                      | The vocabulary in UI form                                                         |
+| `LiveIndicator`, `StreamBanner`              | `components/layout/`                                          | Stream status; the "Live updates paused" banner after 2.5s down                   |
+| `Pipeline`                                   | `app/(main-app)/components/pipeline.tsx`                      | The signature view; dots drawn imperatively by a `DotEngine`                      |
+| `ThroughputChart`                            | `common/throughputChart.tsx`                                  | Mirrored outcomes chart, also used by the simulator                               |
+| `AttemptTimeline`                            | `app/(main-app)/payments/[id]/components/attemptTimeline.tsx` | Attempts and backoff to scale, plus a table                                       |
+| `JsonInspector`                              | `app/(main-app)/payments/[id]/components/jsonInspector.tsx`   | Tabs, monochrome JSON, copy                                                       |
+| `PageHeader`                                 | `components/layout/pageHeader.tsx`                            | Title, one-line description and an optional action, on every top-level page       |
+| `CommandPalette`                             | `components/layout/commandPalette.tsx`                        | ⌘K: a combobox with a listbox                                                     |
 
 ## Copy
 

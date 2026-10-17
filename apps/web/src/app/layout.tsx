@@ -1,9 +1,8 @@
 import type { Metadata, Viewport } from 'next';
 import { JetBrains_Mono, Mona_Sans } from 'next/font/google';
-import { Providers } from '@/components/providers';
-import { AppShell } from '@/components/shell/app-shell';
-import { THEME_BOOT_SCRIPT } from '@/lib/theme';
+import { THEME_BOOT_SCRIPT } from '@/utils/theme';
 import './globals.css';
+import Providers from './providers';
 
 const sans = Mona_Sans({ subsets: ['latin'], variable: '--font-mona', display: 'swap' });
 const mono = JetBrains_Mono({
@@ -25,7 +24,7 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
     // The boot script sets data-theme before paint, so the attribute legitimately differs.
     <html
@@ -37,9 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
       </head>
       <body className="min-h-dvh">
-        <Providers>
-          <AppShell>{children}</AppShell>
-        </Providers>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

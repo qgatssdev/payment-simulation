@@ -1,7 +1,7 @@
 import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react';
 import { forwardRef, useId } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { cn } from '@/lib/cn';
+import { cn } from '@/lib/utils';
 
 export const controlClasses =
   'h-10 w-full rounded-control bg-sunken px-3.5 text-sm text-ink placeholder:text-ink-3 ' +

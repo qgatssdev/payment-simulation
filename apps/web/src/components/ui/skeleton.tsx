@@ -1,4 +1,4 @@
-import { cn } from '@/lib/cn';
+import { cn } from '@/lib/utils';
 
 /** Placeholder shaped like the content it stands in for. */
 export function Skeleton({ className }: { className?: string }) {

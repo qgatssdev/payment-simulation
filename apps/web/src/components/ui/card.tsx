@@ -1,5 +1,5 @@
 import type { HTMLAttributes, ReactNode } from 'react';
-import { cn } from '@/lib/cn';
+import { cn } from '@/lib/utils';
 
 /** A panel: white (or dark) surface with a soft shadow. Panels never nest. */
 export function Card({ className, ...props }: HTMLAttributes<HTMLElement>) {

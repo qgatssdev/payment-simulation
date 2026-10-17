@@ -1,9 +1,9 @@
 import type { LucideIcon } from 'lucide-react';
 import { RefreshCw, TriangleAlert, WifiOff } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { ApiError } from '@/lib/api';
-import { API_URL } from '@/lib/config';
-import { cn } from '@/lib/cn';
+import { API_URL } from '@/config';
+import { cn } from '@/lib/utils';
+import { ApiError } from '@/services/api';
 import { Button } from './button';
 
 /** Nothing here yet: says why, and offers the way forward. */
