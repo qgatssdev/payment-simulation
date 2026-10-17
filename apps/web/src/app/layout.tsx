@@ -24,7 +24,7 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: LayoutProps<'/'>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     // The boot script sets data-theme before paint, so the attribute legitimately differs.
     <html
