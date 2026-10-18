@@ -212,7 +212,8 @@ export function PaymentsTable() {
                       <tr
                         key={key}
                         className={cn(
-                          'group border-t border-hairline hover:bg-panel-2',
+                          // `relative` anchors the stretched row link below.
+                          'group relative cursor-pointer border-t border-hairline hover:bg-panel-2',
                           fresh && 'animate-arrive',
                         )}
                       >
@@ -223,7 +224,8 @@ export function PaymentsTable() {
                                 href={`/payments/${p.id}`}
                                 // A long, live-updating list: prefetching every row's page is waste.
                                 prefetch={false}
-                                className="block truncate font-medium text-ink hover:text-brand-ink"
+                                // The ::after overlay stretches the link over the whole row.
+                                className="block truncate font-medium text-ink group-hover:text-brand-ink after:absolute after:inset-0"
                                 aria-label={`Open payment ${p.description ?? p.id}`}
                               >
                                 {p.description ?? 'No description'}
@@ -235,7 +237,7 @@ export function PaymentsTable() {
                             <CopyButton
                               value={p.id}
                               label="Copy payment ID"
-                              className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                              className="relative z-10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                             />
                           </div>
                         </td>
