@@ -249,6 +249,31 @@
   textarea {
     caret-color: var(--brand);
   }
+  /* Tailwind v4 resets buttons to the default arrow; everything clickable shows the hand. */
+  button,
+  [role='button'],
+  [role='tab'],
+  [role='radio'],
+  [role='option'],
+  [role='menuitem'],
+  [role='switch'],
+  [role='checkbox'],
+  a[href],
+  summary,
+  select,
+  label[for],
+  label:has(input, select),
+  input[type='checkbox'],
+  input[type='radio'],
+  input[type='range'],
+  input[type='submit'],
+  input[type='button'] {
+    cursor: pointer;
+  }
+  :disabled,
+  [aria-disabled='true'] {
+    cursor: not-allowed;
+  }
   :focus-visible {
     outline: 2px solid var(--brand);
     outline-offset: 2px;
